@@ -1,15 +1,18 @@
 services:
   pot:
-    build: .
+    image: ghcr.io/monday-j/the-pot:latest
     restart: unless-stopped
     ports:
       # No auth in the app: LAN only. Don't port-forward this on your router.
       - "8000:8000"
     env_file: .env
     volumes:
-      - ./data:/data
+      - pot-data:/data
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:8000/')"]
       interval: 30s
       timeout: 5s
       retries: 3
+
+volumes:
+  pot-data:

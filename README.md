@@ -47,20 +47,24 @@ DATA_DIR=./data .venv/bin/uvicorn app.main:app --reload
 Then open http://127.0.0.1:8000. The database is `data/pot.db` (git-ignored). The app has no login, so keep it on
 localhost or a trusted network.
 
-## Deploy (Docker Compose, home server)
+## Deploy (Docker Compose / Dockge, home server)
 
-```sh
-cp .env.example .env && chmod 600 .env   # then put your parry.gg key in PARRY_API_KEY
-docker compose up -d --build
-```
+CI builds the image on every push to `main` and publishes it to `ghcr.io/monday-j/the-pot` (private by default).
 
-The database lives in `./data` (bind-mounted at `/data`). Update with `git pull && docker compose up -d --build`.
+1. On the server, log in once so it can pull the private image, using a GitHub personal access token with
+   `read:packages`: `echo <token> | docker login ghcr.io -u monday-j --password-stdin`.
+2. Create the stack (in Dockge: new stack, paste `compose.yaml`) and add a `.env` next to it containing
+   `PARRY_API_KEY=<your parry.gg key>` (see `.env.example`).
+3. Start it. Update later with Dockge's **Update** button, or `docker compose pull && docker compose up -d`.
+
+The database lives in the `pot-data` named volume, mounted at `/data`.
 
 - **No auth**: the port is published on all interfaces so it's reachable on your LAN at `http://<host-ip>:8000`.
   Don't port-forward it on your router.
 - **One worker only**: sync state is an in-process thread and lock, so don't add `--workers` or replicas.
 - **Backups**: the DB holds payment records. Use SQLite's online backup, not a plain file copy (it runs in WAL mode):
-  `sqlite3 data/pot.db ".backup 'backup/pot-$(date +%F).db'"`.
+  `docker compose exec pot python -c "import sqlite3; s=sqlite3.connect('/data/pot.db'); d=sqlite3.connect('/data/backup.db'); s.backup(d)"`
+  then `docker compose cp pot:/data/backup.db ./pot-$(date +%F).db`.
 
 Check that discovery finds your tournaments from the command line (prints no secrets):
 

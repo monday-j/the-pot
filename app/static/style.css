@@ -39,6 +39,7 @@ td.num{text-align:right}
 form.inline{display:inline;margin:0}
 input,select,button{font:inherit;padding:.2rem .45rem;border:1px solid var(--line);border-radius:0;background:var(--bg);color:var(--fg)}
 td input,td select{width:100%;min-width:3.5rem}
+td select{display:block;max-width:16rem}td select+select{margin-top:.25rem}
 button{cursor:pointer;background:var(--acc);color:#fff;border-color:var(--acc)}
 button.sec{background:var(--bg);color:var(--acc);border-color:var(--line);padding:.05rem .4rem;font-size:.85rem}
 button.sec:hover{background:var(--hover)}

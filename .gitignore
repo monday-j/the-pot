@@ -8,4 +8,3 @@ __pycache__/
 *.db-wal
 *.db-shm
 *.db-journal
-parry_api_key.txt

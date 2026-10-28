@@ -5,18 +5,11 @@ services:
     ports:
       # No auth in the app: LAN only. Don't port-forward this on your router.
       - "8000:8000"
-    environment:
-      PARRY_API_KEY_FILE: /run/secrets/parry_api_key
+    env_file: .env
     volumes:
       - ./data:/data
-    secrets:
-      - parry_api_key
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:8000/')"]
       interval: 30s
       timeout: 5s
       retries: 3
-
-secrets:
-  parry_api_key:
-    file: ./parry_api_key.txt

@@ -50,7 +50,7 @@ localhost or a trusted network.
 ## Deploy (Docker Compose, home server)
 
 ```sh
-printf '%s' "your-parry-api-key" > parry_api_key.txt   # git-ignored; mounted as a Docker secret
+cp .env.example .env && chmod 600 .env   # then put your parry.gg key in PARRY_API_KEY
 docker compose up -d --build
 ```
 

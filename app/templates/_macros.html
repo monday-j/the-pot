@@ -1,0 +1,13 @@
+{% macro player(id, tag) %}<a href="/players/{{ id }}">{{ tag }}</a>{% endmacro %}
+{% macro event(id, name) %}<a href="/events/{{ id }}">{{ name }}</a>{% endmacro %}
+{% macro tournament(id, name) %}<a href="/tournaments/{{ id }}">{{ name }}</a>{% endmacro %}
+{% macro series(id, name, code="") %}{% if id %}<a href="/series/{{ code or id }}" title="{{ name }}">{{ code or name }}</a>{% else %}<span class="mut">-</span>{% endif %}{% endmacro %}
+{% macro game(name) %}{% if name %}<a href="/games/{{ name|urlq }}">{{ name }}</a>{% else %}<span class="mut">-</span>{% endif %}{% endmacro %}
+{% macro parry(slug, event_slug="", label="View on parry.gg") %}{% if slug %}<a href="https://parry.gg/{{ slug|urlq }}{% if event_slug %}/{{ event_slug|urlq }}{% endif %}" target="_blank" rel="noopener noreferrer">{{ label }} ↗</a>{% endif %}{% endmacro %}
+{% macro mtd(cents, cls="") %}<td class="r {{ cls }}" data-v="{{ cents or 0 }}">{% if cents %}{{ cents|money }}{% else %}<span class="mut">·</span>{% endif %}</td>{% endmacro %}
+{% macro ptd(n) %}<td class="r" data-v="{{ n or '' }}">{% if n %}{{ n|ordinal }}{% else %}<span class="mut">·</span>{% endif %}</td>{% endmacro %}
+{% macro status(s, paid_at="") %}{% if s %}<span class="st-{{ s }}">{{ s }}{% if paid_at %} {{ paid_at[:10] }}{% endif %}</span>{% endif %}{% endmacro %}
+{% macro flag(reason) %}{% if reason %}<span class="flag" title="{{ reason }}">⚠ {{ reason }}</span>{% endif %}{% endmacro %}
+{% macro paybtn(payout_id, st, next) %}{% if payout_id %}<form class="inline" method="post" action="/payouts/{{ payout_id }}/paid"><input type="hidden" name="next" value="{{ next }}">{% if st == "owed" %}<button class="sec">Mark paid</button>{% else %}<input type="hidden" name="undo" value="1"><button class="sec">Undo</button>{% endif %}</form>{% endif %}{% endmacro %}
+{% macro venuebtn(tid, st, next) %}{% if tid %}<form class="inline" method="post" action="/venue/{{ tid }}/paid"><input type="hidden" name="next" value="{{ next }}">{% if st == "owed" %}<button class="sec">Mark paid</button>{% else %}<input type="hidden" name="undo" value="1"><button class="sec">Undo</button>{% endif %}</form>{% endif %}{% endmacro %}
+{% macro discrepancy(amount, computed) %}{% if amount != computed %} <span class="warn" title="Recalculated: {{ computed|money }}">≠ {{ computed|money }}</span>{% endif %}{% endmacro %}

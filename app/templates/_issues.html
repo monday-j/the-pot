@@ -1,0 +1,4 @@
+{% import "_macros.html" as m %}{% if issues %}<h2>Needs attention <span class="n">· {{ issues|length }} event{{ "s" if issues|length != 1 }} with unfinalised placements, no payouts until fixed on parry.gg and re-synced</span></h2>
+<table><thead><tr><th>Tournament</th><th>Event</th><th>Problem</th></tr></thead><tbody>
+{% for i in issues %}<tr><td>{{ m.tournament(i.tournament_id, i.tournament_name) }}</td><td>{{ m.event(i.id, i.name) }}</td><td>{{ m.flag(i.reason) }}</td></tr>{% endfor %}
+</tbody></table>{% endif %}

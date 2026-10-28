@@ -1,0 +1,19 @@
+{% extends "base.html" %}{% import "_macros.html" as m %}
+{% block crumbs %}<div class="crumbs"><a href="/players">Players</a><span>{{ p.gamer_tag }}</span></div>{% endblock %}
+{% block body %}
+<h1>{{ p.gamer_tag }}</h1>
+<div class="summary"><span><b class="warn">{{ owed|money }}</b> owed</span><span><b class="ok">{{ paid|money }}</b> paid</span><span><b>{{ tournaments }}</b> tournaments</span><span><b>{{ history|length }}</b> events</span>
+<span>best finish <b>{{ best|ordinal if best else "·" }}</b></span></div>
+{% if owed %}<form method="post" action="/players/{{ p.id }}/settle" class="toolbar"><input type="hidden" name="next" value="{{ here }}">
+<label>Note (optional)<input name="note" placeholder="e.g. bank transfer"></label><button>Mark all owed as paid ({{ owed|money }})</button></form>{% endif %}
+<h2>By series and game</h2>
+<table class="sortable"><thead><tr><th>Series</th><th>Game</th><th class="r">Events</th><th class="r">Wins</th><th class="r">Best</th><th class="r">Owed</th><th class="r">Paid</th></tr></thead><tbody>
+{% for r in totals %}<tr><td>{{ m.series(r.series_id, r.sname, r.scode) }}</td><td>{{ m.game(r.game) }}</td><td class="r">{{ r.events }}</td><td class="r">{{ r.wins }}</td>{{ m.ptd(r.best) }}{{ m.mtd(r.owed, "warn") }}{{ m.mtd(r.paid, "ok") }}</tr>
+{% else %}<tr><td colspan="7" class="mut">No events yet.</td></tr>{% endfor %}</tbody></table>
+<h2>History <span class="n">· {{ history|length }}</span></h2>
+<div class="tw"><table class="sortable"><thead><tr><th>Date</th><th>Tournament</th><th>Series</th><th>Event</th><th>Game</th><th class="r">Place</th><th class="r">Payout</th><th>Status</th><th></th></tr></thead><tbody>
+{% for h in history %}<tr><td>{{ h.start_date }}</td><td>{{ m.tournament(h.tid, h.tname) }}</td><td>{{ m.series(h.series_id, h.sname, h.scode) }}</td><td>{{ m.event(h.eid, h.ename) }}</td><td>{{ m.game(h.game_name) }}</td>
+{{ m.ptd(h.placement) }}<td class="r" data-v="{{ h.amount_cents or 0 }}">{% if h.payout_id %}{{ h.amount_cents|money }}{{ m.discrepancy(h.amount_cents, h.computed_cents) }}{% else %}<span class="mut">·</span>{% endif %}</td>
+<td>{{ m.status(h.status, h.paid_at) }}</td><td>{{ m.paybtn(h.payout_id, h.status, here) }}</td></tr>
+{% else %}<tr><td colspan="9" class="mut">No events yet.</td></tr>{% endfor %}</tbody></table></div>
+{% endblock %}

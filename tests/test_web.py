@@ -1,0 +1,244 @@
+import time
+
+import pytest
+from fastapi.testclient import TestClient
+
+from app import config, db, main, sync
+from tests.test_sync import FakeClient
+
+
+@pytest.fixture
+def client(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(config, "DB_PATH", tmp_path / "pot.db")
+    monkeypatch.setenv("PARRY_API_KEY", "test-key")
+    monkeypatch.setattr(main, "GrpcParryClient", FakeClient)
+    sync.status.clear()
+    with TestClient(main.app, follow_redirects=True) as c:
+        yield c
+
+
+def test_end_to_end_flow(client):
+    r = client.post("/series", data={"name": "FNB", "pattern": "friday night brawl"})
+    assert r.status_code == 200 and "FNB" in r.text
+    r = client.post("/series", data={"name": "Empty"})
+    assert "Enter a custom slug or a match pattern" in r.text
+    assert client.post("/series", data={"name": "Slug", "custom_slug": "fridaybrawl"}).status_code == 200
+    assert client.post("/series/1/track").status_code == 200
+    r = client.post("/series/1/rules", data={
+        "game_name": "", "event_id": "", "payout_places": 3, "splits": "50,30,20"})
+    assert "Pick a game" in r.text  # validation error is shown, not a 500
+
+    assert client.post("/series/1/sync").status_code == 200
+    for _ in range(50):
+        if sync.status[1]["state"] != "running":
+            break
+        time.sleep(0.05)
+    assert sync.status[1]["state"] == "done", sync.status[1]
+
+    r = client.post("/series/1/rules", data={
+        "game_name": "Smash Ultimate", "bracket_fee": "5", "payout_places": 3, "fixed_pool": "10",
+        "bracket_fee_pool_pct": "80", "splits": "50,30,20"})
+    assert "Smash Ultimate" in r.text
+
+    assert "Alice" in client.get("/players").text
+    page = client.get("/players/u1").text
+    assert "$13.00" in page and "owed" in page  # 1st of a $26 pool
+    client.post("/players/u1/settle", data={"note": "cash"})
+    page = client.get("/players/u1").text
+    assert "paid" in page and "Mark all owed" not in page
+    assert "$26.00" in client.get("/events/e1").text
+    assert client.get("/").status_code == 200
+
+
+def test_bad_rule_splits_show_error(client):
+    client.post("/series", data={"name": "FNB", "pattern": "x"})
+    r = client.post("/series/1/rules", data={"game_name": "G", "payout_places": 3, "splits": "50,30"})
+    assert "split percentages" in r.text
+
+
+@pytest.fixture
+def seeded(client):
+    client.post("/series", data={"name": "FNB", "custom_slug": "fnb"})
+    client.post("/series/1/rules", data={
+        "game_name": "Smash Ultimate", "bracket_fee": "5", "payout_places": 3, "fixed_pool": "10",
+        "bracket_fee_pool_pct": "80", "splits": "50,30,20"})
+    client.post("/series/1/sync")
+    for _ in range(50):
+        if sync.status[1]["state"] != "running":
+            break
+        time.sleep(0.05)
+    assert sync.status[1]["state"] == "done", sync.status[1]
+    return client
+
+
+@pytest.mark.parametrize("url", ["/", "/series", "/series/1", "/tournaments/t1", "/events/e1", "/events", "/games",
+                                 "/games/Smash%20Ultimate", "/players", "/players/u1", "/payouts"])
+def test_every_page_renders(seeded, url):
+    assert seeded.get(url).status_code == 200
+
+
+def test_records_link_to_each_other(seeded):
+    page = seeded.get("/events/e1").text
+    for href in ('/players/u1', '/tournaments/t1', '/series/FNB', '/games/Smash%20Ultimate'):
+        assert f'href="{href}"' in page
+    assert 'href="/events/e1"' in seeded.get("/players/u1").text
+    assert 'href="/games/Smash%20Ultimate"' in seeded.get("/payouts").text
+    assert 'href="/players/u2"' in seeded.get("/tournaments/t1").text
+    assert 'href="/events/e1"' in seeded.get("/games/Smash%20Ultimate").text
+    assert 'href="/events/e1"' in seeded.get("/events").text
+
+
+def test_unknown_game_is_404(seeded):
+    assert seeded.get("/games/Nope").status_code == 404
+
+
+def test_payout_ledger_filters(seeded):
+    assert seeded.get("/payouts").text.count("Mark paid") == 4
+    seeded.post("/payouts/1/paid", data={"next": "/payouts"})
+    owed = seeded.get("/payouts?status=owed").text
+    paid = seeded.get("/payouts?status=paid").text
+    assert owed.count("Mark paid") == 3 and "Mark paid" not in paid and paid.count("Undo") == 1
+    assert "Alice" in seeded.get("/payouts?q=ali").text and "Bob" not in seeded.get("/payouts?q=ali").text
+    assert "No payouts match" in seeded.get("/payouts?game=Other").text
+
+
+def test_inline_payment_returns_to_page_but_only_locally(seeded):
+    r = seeded.post("/payouts/1/paid", data={"next": "/events/e1"}, follow_redirects=False)
+    assert r.headers["location"] == "/events/e1"
+    for bad in ("//evil.example/x", "https://evil.example", "/\\evil.example", ""):
+        r = seeded.post("/payouts/2/paid", data={"next": bad, "undo": "1"}, follow_redirects=False)
+        assert r.headers["location"].startswith("/players/"), bad
+
+
+
+def settings(**kw):
+    base = {"name": "FNB", "custom_slug": "fnb", "pattern": "", "entry_fee": "5", "venue_name": "The Hall",
+            "venue_flat": "20", "venue_entry_pct": "10", "venue_bracket_pct": "10"}
+    return {**base, **kw}
+
+
+def test_venue_flow(seeded):
+    r = seeded.post("/series/1/settings", data=settings(venue_entry_pct="150"))
+    assert "Venue % of entry fees must be between 0 and 100" in r.text
+    assert seeded.get("/venue").text.count("Mark paid") == 0
+    assert seeded.post("/series/1/settings", data=settings()).status_code == 200
+    page = seeded.get("/venue").text
+    assert "The Hall" in page and "$24.00" in page and page.count("Mark paid") == 1
+    for url in ("/", "/series/1", "/tournaments/t1", "/venue?status=owed&series=1"):
+        assert seeded.get(url).status_code == 200
+    assert "owed to venues" in seeded.get("/").text
+    assert 'href="/tournaments/t1"' in page
+
+    r = seeded.post("/venue/t1/paid", data={"next": "/venue", "note": "bank"}, follow_redirects=False)
+    assert r.headers["location"] == "/venue"
+    assert "Undo" in seeded.get("/venue").text and "bank" in seeded.get("/venue?status=paid").text
+    assert "Mark paid" not in seeded.get("/venue?status=paid").text
+    for bad in ("//evil.example", "https://evil.example", ""):
+        r = seeded.post("/venue/t1/paid", data={"next": bad, "undo": "1"}, follow_redirects=False)
+        assert r.headers["location"] == "/tournaments/t1", bad
+    assert seeded.post("/venue/nope/paid").status_code == 404
+
+
+def test_tournament_venue_override(seeded):
+    seeded.post("/series/1/settings", data=settings())
+    seeded.post("/tournaments/t1/venue", data={"venue_mode": "none"})
+    assert "No venue payments" in seeded.get("/venue").text
+    seeded.post("/tournaments/t1/venue", data={"venue_mode": "custom", "venue_flat": "7"})
+    assert "$7.00" in seeded.get("/venue").text
+    assert "Venue for this tournament" in seeded.get("/tournaments/t1").text
+    r = seeded.post("/tournaments/t1/venue", data={"venue_mode": "custom", "venue_flat": "-1"})
+    assert "cannot be negative" in r.text
+    assert "Unknown venue setting" in seeded.post("/tournaments/t1/venue", data={"venue_mode": "x"}).text
+
+
+def test_init_upgrades_an_old_schema(tmp_path, monkeypatch):
+    import sqlite3
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(config, "DB_PATH", tmp_path / "pot.db")
+    old = sqlite3.connect(tmp_path / "pot.db")
+    old.execute("CREATE TABLE series (id INTEGER PRIMARY KEY, name TEXT NOT NULL, pattern TEXT NOT NULL,"
+                " tracked INTEGER NOT NULL DEFAULT 0, entry_fee_cents INTEGER NOT NULL DEFAULT 0, last_synced TEXT)")
+    old.execute("CREATE TABLE tournament (id TEXT PRIMARY KEY, series_id INTEGER, name TEXT NOT NULL, slug TEXT,"
+                " start_date TEXT, num_attendees INTEGER NOT NULL DEFAULT 0, excluded INTEGER NOT NULL DEFAULT 0,"
+                " manual INTEGER NOT NULL DEFAULT 0, entry_fee_cents INTEGER)")
+    old.execute("INSERT INTO series (name, pattern) VALUES ('FNB','x')")
+    old.commit()
+    old.close()
+    db.init()
+    db.init()  # running twice is harmless
+    c = db.connect()
+    row = c.execute("SELECT * FROM series").fetchone()
+    assert (row["custom_slug"], row["venue_name"], row["venue_flat_cents"], row["venue_entry_pct"]) == ("", "", 0, "0")
+    assert "venue_mode" in {r["name"] for r in c.execute("PRAGMA table_info(tournament)")}
+    c.close()
+
+
+def test_dashboard_shows_total_owed_to_players_and_venues(seeded):
+    seeded.post("/series/1/settings", data=settings())
+    page = seeded.get("/").text
+    # 4 player payouts ($26 pool) + venue payable ($24.00)
+    assert "Total owed" in page and "$50.00" in page and "$26.00 to players + $24.00 to venues" in page
+
+
+def test_pages_link_out_to_parry_gg(seeded):
+    page = seeded.get("/tournaments/t1").text
+    assert 'href="https://parry.gg/friday-night-brawl-90-abc"' in page and 'target="_blank"' in page
+    page = seeded.get("/events/e1").text
+    assert 'href="https://parry.gg/friday-night-brawl-90-abc/ultimate-singles"' in page
+    # an event imported before slugs were stored still links to its tournament
+    sync_db = db.connect()
+    sync_db.execute("UPDATE event SET slug='' WHERE id='e1'")
+    sync_db.commit()
+    sync_db.close()
+    page = seeded.get("/events/e1").text
+    assert 'href="https://parry.gg/friday-night-brawl-90-abc"' in page and "ultimate-singles" not in page
+
+
+def test_series_codes_in_urls_and_links(seeded):
+    assert seeded.get("/series/FNB").status_code == 200
+    assert seeded.get("/series/fnb").status_code == 200  # case-insensitive
+    r = seeded.get("/series/1?error=boom", follow_redirects=False)
+    assert r.status_code == 307 and r.headers["location"] == "/series/FNB?error=boom"
+    assert "boom" in seeded.get("/series/1?error=boom").text  # message survives the redirect
+    assert seeded.get("/series/ZZZ").status_code == 404
+    for url in ("/", "/series", "/events", "/payouts", "/venue", "/players/u1", "/tournaments/t1", "/events/e1"):
+        page = seeded.get(url).text
+        assert 'href="/series/1"' not in page, url
+    assert 'href="/series/FNB"' in seeded.get("/events").text
+    assert 'title="FNB"' in seeded.get("/events").text
+
+
+def test_series_code_rules(seeded):
+    assert "exactly three letters" in seeded.post("/series", data={"name": "X", "custom_slug": "x", "code": "AB"}).text
+    r = seeded.post("/series", data={"name": "Other Club", "custom_slug": "oc", "code": "oth"})
+    assert 'href="/series/OTH"' in seeded.get("/series").text
+    assert "already used by Other Club" in seeded.post("/series", data={"name": "Y", "custom_slug": "y", "code": "OTH"}).text
+    assert "already used by Other Club" in seeded.post("/series/1/settings", data=settings(code="OTH")).text
+    seeded.post("/series/1/settings", data=settings(code="abc"))
+    assert seeded.get("/series/ABC").status_code == 200
+    seeded.post("/series/1/settings", data=settings())  # blank code keeps the current one
+    assert seeded.get("/series/ABC").status_code == 200
+    # auto code when left blank, never colliding
+    seeded.post("/series", data={"name": "Other Club", "custom_slug": "oc2"})
+    codes = [r["code"] for r in db.connect().execute("SELECT code FROM series")]
+    assert len(codes) == len(set(codes)) and all(len(c) == 3 for c in codes)
+
+
+def test_init_backfills_series_codes(tmp_path, monkeypatch):
+    import sqlite3
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(config, "DB_PATH", tmp_path / "pot.db")
+    old = sqlite3.connect(tmp_path / "pot.db")
+    old.execute("CREATE TABLE series (id INTEGER PRIMARY KEY, name TEXT NOT NULL, pattern TEXT NOT NULL,"
+                " tracked INTEGER NOT NULL DEFAULT 0, entry_fee_cents INTEGER NOT NULL DEFAULT 0, last_synced TEXT)")
+    for name in ("Friday Night Brawl", "Friday Night Bistro", "The Weekend Warriors"):
+        old.execute("INSERT INTO series (name, pattern) VALUES (?, 'x')", (name,))
+    old.commit()
+    old.close()
+    db.init()
+    db.init()
+    c = db.connect()
+    got = [r["code"] for r in c.execute("SELECT code FROM series ORDER BY id")]
+    assert got[0] == "FNB" and got[2] == "WWA" and len(set(got)) == 3 and all(len(x) == 3 for x in got)
+    c.close()

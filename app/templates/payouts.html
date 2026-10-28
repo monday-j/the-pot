@@ -1,0 +1,14 @@
+{% extends "base.html" %}{% import "_macros.html" as m %}{% block body %}
+<h1>Payouts</h1>
+<form method="get" class="toolbar">
+<label>Status<select name="status"><option value="">all</option><option value="owed" {{ "selected" if f_status == "owed" }}>owed</option><option value="paid" {{ "selected" if f_status == "paid" }}>paid</option></select></label>
+<label>Series<select name="series"><option value="">all</option>{% for s in series_opts %}<option value="{{ s.id }}" {{ "selected" if f_series == s.id }}>{{ s.code }} · {{ s.name }}</option>{% endfor %}</select></label>
+<label>Game<select name="game"><option value="">all</option>{% for g in game_opts %}<option {{ "selected" if f_game == g }}>{{ g }}</option>{% endfor %}</select></label>
+<label>Player<input name="q" value="{{ f_q }}"></label><button>Apply</button></form>
+<div class="summary"><span><b>{{ rows|length }}</b> payouts</span><span><b class="warn">{{ owed|money }}</b> owed</span><span><b class="ok">{{ paid|money }}</b> paid</span></div>
+<div class="tw"><table class="sortable"><thead><tr><th>Date</th><th>Player</th><th>Tournament</th><th>Event</th><th>Game</th><th class="r">Place</th><th class="r">Amount</th><th>Status</th><th>Note</th><th></th></tr></thead><tbody>
+{% for r in rows %}<tr><td>{{ r.start_date }}</td><td>{{ m.player(r.player_id, r.gamer_tag) }}</td><td>{{ m.tournament(r.tid, r.tname) }}</td><td>{{ m.event(r.eid, r.ename) }}</td><td>{{ m.game(r.game_name) }}</td>
+{{ m.ptd(r.placement) }}<td class="r" data-v="{{ r.amount_cents }}">{{ r.amount_cents|money }}{{ m.discrepancy(r.amount_cents, r.computed_cents) }}</td>
+<td>{{ m.status(r.status, r.paid_at) }}</td><td class="mut">{{ r.note }}</td><td>{{ m.paybtn(r.id, r.status, here) }}</td></tr>
+{% else %}<tr><td colspan="10" class="mut">No payouts match.</td></tr>{% endfor %}</tbody></table></div>
+{% endblock %}

@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{% block title %}The Pot{% endblock %}</title><link rel="stylesheet" href="/static/style.css">
+{% block head %}{% endblock %}</head><body>
+{% set path = request.url.path %}
+<nav><a class="brand" href="/">The Pot</a>
+<a href="/" class="{{ 'on' if path == '/' }}">Dashboard</a>
+<a href="/series" class="{{ 'on' if path.startswith(('/series', '/tournaments')) }}">Series</a>
+<a href="/events" class="{{ 'on' if path.startswith('/events') }}">Events</a>
+<a href="/games" class="{{ 'on' if path.startswith('/games') }}">Games</a>
+<a href="/players" class="{{ 'on' if path.startswith('/players') }}">Players</a>
+<a href="/payouts" class="{{ 'on' if path.startswith('/payouts') }}">Payouts</a>
+<a href="/venue" class="{{ 'on' if path.startswith('/venue') }}">Venue</a></nav>
+<main>
+{% block crumbs %}{% endblock %}
+{% if error %}<div class="strip err">{{ error }}</div>{% endif %}
+{% block body %}{% endblock %}
+</main><script src="/static/table.js"></script></body></html>

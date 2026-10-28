@@ -1,0 +1,17 @@
+{% extends "base.html" %}{% import "_macros.html" as m %}{% block body %}
+<h1>Series</h1>
+<div class="summary"><span><b>{{ series|length }}</b> series</span></div>
+<div class="tw"><table class="sortable"><thead><tr><th>Code</th><th>Series</th><th>Matches</th><th class="r">Tournaments</th><th class="r">Events</th><th>Latest</th><th class="r">Players owed</th><th class="r">Players paid</th><th class="r">Venue owed</th><th class="r">Flags</th><th>Tracked</th><th>Last synced</th></tr></thead><tbody>
+{% for s in series %}<tr><td><b>{{ m.series(s.id, s.name, s.code) }}</b></td><td><a href="/series/{{ s.code or s.id }}">{{ s.name }}</a></td><td class="mut">{% if s.custom_slug %}slug: {{ s.custom_slug }}{% else %}{{ s.pattern }}{% endif %}</td>
+<td class="r">{{ s.n }}</td><td class="r">{{ s.events }}</td><td>{{ s.last_date or "" }}</td>{{ m.mtd(s.owed, "warn") }}{{ m.mtd(s.paid, "ok") }}{{ m.mtd(s.venue_owed, "warn") }}
+<td class="r">{% if s.flags %}<span class="flag">{{ s.flags }}</span>{% else %}<span class="mut">·</span>{% endif %}</td>
+<td>{{ "yes" if s.tracked else "no" }}</td><td class="mut">{{ (s.last_synced or "never")[:16] }}</td></tr>
+{% else %}<tr><td colspan="12" class="mut">No series yet. Add one below.</td></tr>{% endfor %}</tbody></table></div>
+<form method="post" action="/series" class="toolbar">
+<label>Name<input name="name" placeholder="Friday Night Brawl" required></label>
+<label>Code (3 letters)<input name="code" placeholder="auto" maxlength="3" size="4" pattern="[A-Za-z]{3}" style="text-transform:uppercase"></label>
+<label>Custom slug<input name="custom_slug" placeholder="fridaybrawl"></label>
+<label>Name pattern (fallback)<input name="pattern" placeholder="Friday Night Brawl"></label>
+<button>Add series</button></form>
+<p class="help">The custom slug is the quick link shared by every tournament in the series (parry.gg/&lt;slug&gt;) and is the most reliable match. Without one, the pattern is matched (ignoring case and punctuation) against each tournament's name and URL slug. Fill in at least one.</p>
+{% endblock %}

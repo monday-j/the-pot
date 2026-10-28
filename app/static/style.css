@@ -1,0 +1,46 @@
+:root{--bg:#fff;--fg:#1a1d24;--mut:#667085;--line:#d5d9e0;--head:#eef0f4;--zebra:#f7f8fa;--hover:#e8f0fe;
+--acc:#1d4ed8;--ok:#15803d;--warn:#a16207;--bad:#b42318;--warnbg:#fff8e1;--badbg:#fdecea;--bar:#1a1d24;--barfg:#e8eaf0}
+@media (prefers-color-scheme:dark){:root{--bg:#14161b;--fg:#e6e8ee;--mut:#98a0b0;--line:#2e323d;--head:#1e222b;--zebra:#181b22;--hover:#202b44;
+--acc:#7aa2ff;--ok:#4ade80;--warn:#fbbf24;--bad:#f87171;--warnbg:#2a2410;--badbg:#2e1816;--bar:#0d0f13;--barfg:#e6e8ee}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:13.5px/1.4 system-ui,-apple-system,"Segoe UI",sans-serif}
+a{color:var(--acc);text-decoration:none}a:hover{text-decoration:underline}
+nav{display:flex;gap:1.1rem;align-items:baseline;padding:.45rem 1rem;background:var(--bar);color:var(--barfg)}
+nav a{color:var(--barfg);opacity:.75}nav a.on,nav a:hover{opacity:1;text-decoration:none}nav .brand{font-weight:700;opacity:1;margin-right:.6rem}
+nav a.on{border-bottom:2px solid var(--barfg)}
+main{max-width:1500px;margin:0 auto;padding:.7rem 1rem 3rem}
+h1{font-size:1.25rem;margin:.1rem 0 .3rem}
+h2{font-size:.78rem;text-transform:uppercase;letter-spacing:.05em;color:var(--mut);margin:1.4rem 0 .3rem;padding-bottom:.2rem;border-bottom:1px solid var(--line)}
+h2 .n{font-weight:400}
+.crumbs{color:var(--mut);font-size:.85rem}.crumbs a{color:var(--mut)}.crumbs>*+*:before{content:" › ";white-space:pre}
+.summary{display:flex;flex-wrap:wrap;gap:.2rem 1.6rem;margin:.2rem 0 .6rem;color:var(--mut)}.summary b{color:var(--fg);font-size:1.05rem;font-weight:600}
+.total{display:flex;flex-wrap:wrap;align-items:baseline;gap:.2rem 1rem;margin:.4rem 0 .6rem;padding:.4rem .8rem;border-left:4px solid var(--warn);background:var(--zebra)}
+.total b{font-size:2.6rem;line-height:1.1;font-weight:700;font-variant-numeric:tabular-nums}
+.mut{color:var(--mut)}.ok{color:var(--ok)}.warn{color:var(--warn)}.bad{color:var(--bad)}
+table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
+th,td{text-align:left;padding:.22rem .55rem;border-bottom:1px solid var(--line);vertical-align:baseline;white-space:nowrap}
+td.wrapt{white-space:normal}
+thead th,th{background:var(--head);font-size:.72rem;text-transform:uppercase;letter-spacing:.04em;color:var(--mut);font-weight:600;
+position:sticky;top:0;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
+tbody tr:nth-child(even){background:var(--zebra)}tbody tr:hover{background:var(--hover)}
+tfoot td{font-weight:600;background:var(--head);border-top:1px solid var(--line)}
+td.r,th.r{text-align:right}td.c,th.c{text-align:center}
+table.sortable th{cursor:pointer;user-select:none}table.sortable th[data-dir="1"]:after{content:" ▲"}table.sortable th[data-dir="-1"]:after{content:" ▼"}
+table.kv th{position:static;text-align:left;width:16rem;text-transform:none;letter-spacing:0;font-size:inherit;font-weight:400;background:var(--zebra);border-top:0}
+table.kv{max-width:60rem}
+td.num{text-align:right}
+.st-owed{color:var(--warn)}.st-paid{color:var(--ok)}
+.flag{color:var(--bad);font-weight:600}.tag{font-size:.72rem;padding:0 .35rem;border:1px solid var(--line);color:var(--mut)}
+.strip{padding:.4rem .7rem;margin:.5rem 0;border-left:4px solid var(--warn);background:var(--warnbg)}
+.strip.err{border-left-color:var(--bad);background:var(--badbg);color:var(--bad)}
+.strip ul{margin:.25rem 0 0;padding-left:1.1rem}
+.toolbar{display:flex;flex-wrap:wrap;gap:.4rem 1rem;align-items:end;margin:.4rem 0;padding:.4rem 0}
+.toolbar label{display:flex;flex-direction:column;font-size:.72rem;color:var(--mut);text-transform:uppercase;letter-spacing:.04em}
+form.inline{display:inline;margin:0}
+input,select,button{font:inherit;padding:.2rem .45rem;border:1px solid var(--line);border-radius:0;background:var(--bg);color:var(--fg)}
+td input,td select{width:100%;min-width:3.5rem}
+button{cursor:pointer;background:var(--acc);color:#fff;border-color:var(--acc)}
+button.sec{background:var(--bg);color:var(--acc);border-color:var(--line);padding:.05rem .4rem;font-size:.85rem}
+button.sec:hover{background:var(--hover)}
+.filter{margin:.3rem 0}.help{color:var(--mut);font-size:.85rem;margin:.3rem 0}
+@media (max-width:800px){.tw{overflow-x:auto}th{position:static}main{padding:.5rem}nav{flex-wrap:wrap;gap:.5rem .9rem}}

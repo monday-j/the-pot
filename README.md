@@ -47,6 +47,21 @@ DATA_DIR=./data .venv/bin/uvicorn app.main:app --reload
 Then open http://127.0.0.1:8000. The database is `data/pot.db` (git-ignored). The app has no login, so keep it on
 localhost or a trusted network.
 
+## Deploy (Docker Compose, home server)
+
+```sh
+printf '%s' "your-parry-api-key" > parry_api_key.txt   # git-ignored; mounted as a Docker secret
+docker compose up -d --build
+```
+
+The database lives in `./data` (bind-mounted at `/data`). Update with `git pull && docker compose up -d --build`.
+
+- **No auth**: the port is published on all interfaces so it's reachable on your LAN at `http://<host-ip>:8000`.
+  Don't port-forward it on your router.
+- **One worker only**: sync state is an in-process thread and lock, so don't add `--workers` or replicas.
+- **Backups**: the DB holds payment records. Use SQLite's online backup, not a plain file copy (it runs in WAL mode):
+  `sqlite3 data/pot.db ".backup 'backup/pot-$(date +%F).db'"`.
+
 Check that discovery finds your tournaments from the command line (prints no secrets):
 
 ```sh

@@ -30,8 +30,22 @@ class SquareClient(Protocol):
     def list_payments(self, begin_time: str, end_time: str, location_id: str = "") -> list[SquarePayment]: ...
 
 
-class MissingSquareToken(RuntimeError):
+class SquareConfigError(RuntimeError):
     pass
+
+
+class MissingSquareToken(SquareConfigError):
+    pass
+
+
+def environment() -> str:
+    """The Square environment to call. Never guessed: sandbox and production tokens only work against their own host."""
+    env = config.square_env()
+    if not env:
+        raise SquareConfigError("Set SQUARE_ENV to sandbox or production (it must match the SQUARE_API_KEY token)")
+    if env not in BASE_URLS:
+        raise SquareConfigError(f"SQUARE_ENV must be sandbox or production, not {env!r}")
+    return env
 
 
 def parse_payment(p: dict) -> SquarePayment:
@@ -49,7 +63,8 @@ class HttpSquareClient:
         token = config.square_token()
         if not token:
             raise MissingSquareToken("No Square API key configured (SQUARE_API_KEY)")
-        self._http = httpx.Client(base_url=BASE_URLS.get(config.SQUARE_ENV, BASE_URLS["sandbox"]), timeout=30,
+        self.env = environment()
+        self._http = httpx.Client(base_url=BASE_URLS[self.env], timeout=30,
                                   headers={"Authorization": f"Bearer {token}", "Square-Version": SQUARE_VERSION},
                                   transport=transport)
 
@@ -66,7 +81,9 @@ class HttpSquareClient:
             if r.status_code != 200:  # Square's error detail, never the request headers
                 detail = "; ".join(e.get("detail", e.get("code", "")) for e in r.json().get("errors", [])) \
                     if r.headers.get("content-type", "").startswith("application/json") else r.reason_phrase
-                raise RuntimeError(f"Square returned {r.status_code}: {detail}")
+                hint = (f" Check that SQUARE_API_KEY is a {self.env} access token, or set SQUARE_ENV to match it."
+                        if r.status_code == 401 else "")
+                raise RuntimeError(f"Square ({self.env}) returned {r.status_code}: {detail.rstrip('.')}.{hint}")
             body = r.json()
             out += [parse_payment(p) for p in body.get("payments", [])]
             if not body.get("cursor"):

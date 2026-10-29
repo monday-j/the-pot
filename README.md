@@ -66,9 +66,12 @@ DATA_DIR=./data .venv/bin/uvicorn app.main:app --reload
 `.env` is git-ignored. The key is read at runtime only and is never stored in the database or logs.
 
 For Square, create an app in the [Square Developer dashboard](https://developer.squareup.com/apps) and put its access
-token (Credentials page; the app id isn't needed) in `SQUARE_API_KEY`. Use the sandbox token with `SQUARE_ENV=sandbox`
-to try it out, then the production token with `SQUARE_ENV=production`. It only reads payments (`PAYMENTS_READ`). Set `TZ` to your local time zone (e.g.
-`Australia/Hobart`) so each tournament's day is right. If you have more than one Square location, put the venue's
+token (Credentials page; the app id isn't needed) in `SQUARE_API_KEY`, and set `SQUARE_ENV` to match it: `sandbox`
+for the Sandbox tab's token, `production` for the Production tab's (for real payments). `SQUARE_ENV` is required:
+each token is only accepted by its own Square environment (the other answers 401), so the app won't guess, and the
+tournament page shows which environment is in use. It only reads payments (`PAYMENTS_READ`). After changing `.env`,
+recreate the container (`docker compose up -d`); a restart keeps the old values. Set `TZ` to your local time zone
+(e.g. `Australia/Hobart`) so each tournament's day is right. If you have more than one Square location, put the venue's
 location id on its venue page. The only code that talks to Square is `app/square_client.py`.
 
 Then open http://127.0.0.1:8000. The database is `data/pot.db` (git-ignored). The app has no login, so keep it on

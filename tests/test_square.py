@@ -128,7 +128,21 @@ def test_square_pages(client, monkeypatch):  # noqa: F811
     assert "Set <code>SQUARE_API_KEY</code>" in page and "$20.00</b> expected from 4 attendees" in page
     assert "No Square API key" in client.post("/tournaments/t1/square/pull").text
 
+    # a key without SQUARE_ENV (how production first broke) is refused up front, not sent to the wrong host
     monkeypatch.setenv("SQUARE_API_KEY", "test-token")
+    monkeypatch.delenv("SQUARE_ENV", raising=False)
+    page = client.get("/tournaments/t1").text
+    assert "Set SQUARE_ENV to sandbox or production" in page and "Pull payments from Square</button>" in page
+    assert '<button class="sec" disabled>Pull payments' in page
+    page = client.post("/tournaments/t1/square/pull").text
+    assert "Set SQUARE_ENV to sandbox or production" in page and "SquareConfigError" not in page
+    monkeypatch.setenv("SQUARE_ENV", "prod")
+    assert "not &#39;prod&#39;" in client.get("/tournaments/t1").text
+    monkeypatch.setenv("SQUARE_ENV", "Production ")
+    assert "Square: production" in client.get("/tournaments/t1").text
+
+    monkeypatch.setenv("SQUARE_ENV", "sandbox")
+    assert "Square: sandbox" in client.get("/tournaments/t1").text
     fake = FakeSquare([pay("P1", 500, "fp-a"), pay("P2", 500, "fp-b")])
     monkeypatch.setattr(main, "HttpSquareClient", lambda: fake)
     page = client.post("/tournaments/t1/square/pull").text
@@ -143,11 +157,16 @@ def test_square_pages(client, monkeypatch):  # noqa: F811
 
 def test_http_client_pages_and_reports_errors(monkeypatch):
     import httpx
-    from app.square_client import HttpSquareClient, MissingSquareToken
+    from app.square_client import HttpSquareClient, MissingSquareToken, SquareConfigError
     monkeypatch.delenv("SQUARE_API_KEY", raising=False)
     with pytest.raises(MissingSquareToken):
         HttpSquareClient()
     monkeypatch.setenv("SQUARE_API_KEY", "tok")
+    for env, problem in (("", "Set SQUARE_ENV"), ("prod", "not 'prod'")):
+        monkeypatch.setenv("SQUARE_ENV", env)
+        with pytest.raises(SquareConfigError, match=problem):
+            HttpSquareClient()
+    monkeypatch.setenv("SQUARE_ENV", "sandbox")
     seen = []
 
     def handler(request):
@@ -164,5 +183,11 @@ def test_http_client_pages_and_reports_errors(monkeypatch):
     assert first.url.host == "connect.squareupsandbox.com" and first.url.path == "/v2/payments"
     assert first.headers["authorization"] == "Bearer tok" and first.headers["square-version"]
     assert first.url.params["begin_time"] == "2026-01-01T00:00:00Z" and first.url.params["location_id"] == "LOC"
-    with pytest.raises(RuntimeError, match="401: bad token"):
+    with pytest.raises(RuntimeError, match=r"Square \(sandbox\) returned 401: bad token\. Check that SQUARE_API_KEY is a "
+                                           r"sandbox access token"):
         c.list_payments("a", "b", "BAD")
+
+    monkeypatch.setenv("SQUARE_ENV", "production")
+    seen.clear()
+    HttpSquareClient(httpx.MockTransport(handler)).list_payments("a", "b")
+    assert seen[0].url.host == "connect.squareup.com"

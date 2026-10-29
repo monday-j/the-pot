@@ -12,7 +12,7 @@ from fastapi.templating import Jinja2Templates
 
 from . import codes, config, db, square, sync
 from .parry_client import GrpcParryClient
-from .square_client import HttpSquareClient
+from .square_client import HttpSquareClient, SquareConfigError, environment as square_environment
 from .payouts import (Rule, RuleError, VenueCut, compute_payouts, parse_splits, pool_breakdown, splits_from_json,
                       splits_to_json, venue_breakdown)
 
@@ -436,6 +436,16 @@ def delete_period(period_id: int):
 
 # --- Square ----------------------------------------------------------------
 
+def square_setup() -> dict:
+    """What the tournament page says about Square: whether a key is set, which environment, or what's wrong."""
+    if not config.square_token():
+        return {"token": False, "env": None, "error": None}
+    try:
+        return {"token": True, "env": square_environment(), "error": None}
+    except SquareConfigError as e:
+        return {"token": True, "env": None, "error": str(e)}
+
+
 @app.post("/tournaments/{tournament_id}/square/pull")
 def square_pull(tournament_id: str):
     to = f"/tournaments/{tournament_id}#square"
@@ -450,6 +460,8 @@ def square_pull(tournament_id: str):
                 square.pull_tournament(conn, client, tournament_id)
         finally:
             client.close()
+    except SquareConfigError as e:
+        return back(f"/tournaments/{tournament_id}", str(e))
     except Exception as e:  # shown in the UI; never includes the token
         return back(f"/tournaments/{tournament_id}", f"{type(e).__name__}: {e}")
     return back(to)
@@ -563,7 +575,7 @@ def tournament_page(request: Request, tournament_id: str):
         venues = venue_options(conn)
         recon = square.reconcile(conn, tournament_id)
     return render(request, "tournament.html", t=t, events=events, attendees=list(attendees.values()), venue=venue,
-                  venues=venues, recon=recon, has_square=bool(config.square_token()))
+                  venues=venues, recon=recon, square_setup=square_setup())
 
 
 @app.get("/events")

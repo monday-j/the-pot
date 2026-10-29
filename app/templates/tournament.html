@@ -39,8 +39,8 @@
 {% if recon.payments %}<span><b class="{{ 'ok' if recon.difference == 0 else 'bad' }}">{{ recon.difference|money }}</b> difference</span>
 <span><b class="{{ 'warn' if recon.unlinked }}">{{ recon.unlinked }}</b> not linked to a player</span>
 <span><b class="{{ 'bad' if recon.problems }}">{{ recon.problems }}</b> players unpaid, short or over</span>{% endif %}</div>
-<form method="post" action="/tournaments/{{ t.id }}/square/pull" class="toolbar"><button class="sec" {{ "disabled" if not has_square }}>Pull payments from Square</button>
-{% if not has_square %}<span class="mut">Set <code>SQUARE_API_KEY</code> to pull payments.</span>{% else %}<span class="mut">Payments on {{ t.start_date }} (until 6am the next day){% if venue and venue.info.venue_id %} at the venue's Square location{% endif %}.</span>{% endif %}</form>
+{% set sq = square_setup %}<form method="post" action="/tournaments/{{ t.id }}/square/pull" class="toolbar"><button class="sec" {{ "disabled" if not sq.env }}>Pull payments from Square</button>
+{% if not sq.token %}<span class="mut">Set <code>SQUARE_API_KEY</code> and <code>SQUARE_ENV</code> to pull payments.</span>{% elif sq.error %}<span class="bad">{{ sq.error }}</span>{% else %}<span class="tag" title="SQUARE_ENV">Square: {{ sq.env }}</span> <span class="mut">Payments on {{ t.start_date }} (until 6am the next day){% if venue and venue.info.venue_id %} at the venue's Square location{% endif %}.</span>{% endif %}</form>
 {% if recon.payments %}
 <div class="tw"><table class="sortable"><thead><tr><th>Time</th><th class="r">Amount</th><th>Card</th><th>Name / note</th><th>Player</th><th></th></tr></thead><tbody>
 {% for p in recon.payments %}<tr{% if p.ignored %} class="mut"{% endif %}><td>{{ p.created_at|localtime }}</td>{{ m.mtd(p.amount_cents) }}

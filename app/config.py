@@ -15,10 +15,15 @@ def api_key() -> str | None:
 
 
 # Square (optional): payments taken at the door, to reconcile against expected entry and bracket fees.
-SQUARE_ENV = os.environ.get("SQUARE_ENV", "sandbox").strip().lower()  # "sandbox" or "production"
 TIMEZONE = os.environ.get("TZ", "UTC")  # local time of the tournaments, for the Square time window
 
 
 def square_token() -> str | None:
     """Read at call time, like api_key()."""
     return os.environ.get("SQUARE_API_KEY", "").strip() or None
+
+
+def square_env() -> str:
+    """"sandbox" or "production" as configured (no default: a token for one is rejected by the other);
+    square_client.environment() validates it."""
+    return os.environ.get("SQUARE_ENV", "").strip().lower()

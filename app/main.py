@@ -6,7 +6,7 @@ from urllib.parse import quote, urlencode
 from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, Form, HTTPException, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -167,6 +167,12 @@ def one(conn, sql, *args):
     if row is None:
         raise HTTPException(404)
     return row
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+def favicon():
+    """Browsers ask for this path directly, whatever the page links."""
+    return FileResponse(BASE / "static" / "favicon.ico", media_type="image/x-icon")
 
 
 # --- dashboard & series ----------------------------------------------------

@@ -344,3 +344,12 @@ def test_series_terms_over_time(seeded):
     assert 'action="/periods/2"' not in seeded.get("/series/FNB").text
     assert seeded.get("/periods/2/delete").status_code == 405
     assert seeded.post("/periods/2/delete").status_code == 404
+
+
+def test_favicon(client):
+    r = client.get("/favicon.ico")
+    assert r.status_code == 200 and r.headers["content-type"] == "image/x-icon" and r.content[:4] == b"\x00\x00\x01\x00"
+    r = client.get("/static/favicon.svg")
+    assert r.status_code == 200 and "<svg" in r.text
+    page = client.get("/").text
+    assert 'href="/static/favicon.svg"' in page and 'href="/favicon.ico"' in page

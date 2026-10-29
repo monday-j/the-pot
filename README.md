@@ -82,6 +82,11 @@ DATA_DIR=./data .venv/bin/uvicorn app.main:app --reload
 
 `.env` is git-ignored. The key is read at runtime only and is never stored in the database or logs.
 
+Dependencies are pinned with hashes: `requirements.txt` (the app) and `requirements-dev.txt` are compiled from the
+`.in` files, so change those and recompile with `.venv/bin/pip-compile --generate-hashes --strip-extras --allow-unsafe
+requirements.in` (then the same for `requirements-dev.in`). Dependabot opens weekly PRs for these, the Docker base
+image digest and the GitHub Actions SHAs, and CI fails on any known vulnerability (`pip-audit`).
+
 ### Square: read-only access
 
 The app only ever reads from Square, and it's set up so the server can't do anything else. Square's personal

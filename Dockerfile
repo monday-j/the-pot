@@ -1,4 +1,5 @@
-FROM python:3.12-slim
+# Pinned by digest; Dependabot proposes updates.
+FROM python:3.12-slim@sha256:aa943ce411423c7582288f18707ff66eddcbaeb510502d747a72aeb34f30d159
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -6,7 +7,8 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /srv
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Exact versions with hashes (requirements.txt, compiled from requirements.in): nothing unpinned or tampered installs.
+RUN pip install --no-cache-dir --require-hashes --no-deps -r requirements.txt
 
 COPY app ./app
 

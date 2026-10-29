@@ -4,6 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import config, db, main, sync
+from tests.conftest import PASSWORD
 from tests.test_sync import FakeClient, TwoNightsClient
 
 
@@ -15,6 +16,7 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(main, "GrpcParryClient", FakeClient)
     sync.status.clear()
     with TestClient(main.app, follow_redirects=True) as c:
+        assert c.post("/login", data={"password": PASSWORD}).status_code == 200
         yield c
 
 

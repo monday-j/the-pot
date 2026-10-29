@@ -14,6 +14,25 @@ def api_key() -> str | None:
     return os.environ.get("PARRY_API_KEY", "").strip() or None
 
 
+def password() -> str | None:
+    """The shared login password (POT_PASSWORD or a file named by POT_PASSWORD_FILE), read at call time like
+    api_key(). With none set the app refuses every page but /login and /healthz."""
+    pw_file = os.environ.get("POT_PASSWORD_FILE")
+    if pw_file:
+        return Path(pw_file).read_text().strip() or None
+    return os.environ.get("POT_PASSWORD", "").strip() or None
+
+
+def allowed_hosts() -> list[str]:
+    """Host names the app answers to (POT_ALLOWED_HOSTS, comma-separated); empty means any (no DNS rebinding check)."""
+    return [h.strip() for h in os.environ.get("POT_ALLOWED_HOSTS", "").split(",") if h.strip()]
+
+
+def cookie_secure() -> bool:
+    """Mark the login cookie Secure (POT_COOKIE_SECURE=1), for when the app is served over HTTPS."""
+    return os.environ.get("POT_COOKIE_SECURE", "").strip().lower() in ("1", "true", "yes")
+
+
 # Square (optional): payments taken at the door, to reconcile against expected entry and bracket fees.
 TIMEZONE = os.environ.get("TZ", "UTC")  # local time of the tournaments, for the Square time window
 

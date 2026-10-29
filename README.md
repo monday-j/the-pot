@@ -2,7 +2,7 @@
 
 Automates tournament payouts for recurring [parry.gg](https://parry.gg) tournaments. Track a series, import its
 history, set payout rules per game or event, and keep a profile for every player with their placements, what
-you've paid them and what you still owe. Local-only (no auth), SQLite, run as a small test web server.
+you've paid them and what you still owe. For your LAN, behind one shared password; SQLite, run as a small web server.
 
 ## How it works
 
@@ -75,7 +75,7 @@ you've paid them and what you still owe. Local-only (no auth), SQLite, run as a 
 ```sh
 python -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
 .venv/bin/pytest -q
-cp .env.example .env             # put your parry.gg API key in PARRY_API_KEY
+cp .env.example .env             # set POT_PASSWORD, and your parry.gg API key in PARRY_API_KEY
 set -a; . ./.env; set +a
 DATA_DIR=./data .venv/bin/uvicorn app.main:app --reload
 ```
@@ -126,15 +126,35 @@ Square location, put the venue's location id on its venue page. The only code th
 250ms apart, and a rate-limited (`429`), server-error or dropped request is retried up to 5 times with exponential
 backoff and jitter (honouring `Retry-After`). Each retry is logged.
 
-Then open http://127.0.0.1:8000. The database is `data/pot.db` (git-ignored). The app has no login, so keep it on
-localhost or a trusted network.
+Then open http://127.0.0.1:8000 and log in with `POT_PASSWORD`. The database is `data/pot.db` (git-ignored).
+
+### Login and request checks
+
+- **Password**: every page needs the shared password in `POT_PASSWORD` (or a file named by `POT_PASSWORD_FILE`).
+  With none set, the app refuses every page (503) rather than run open. Use a long random one.
+- **Session**: logging in sets an HttpOnly, SameSite=Lax cookie that lasts 30 days. It's signed with a random key
+  the app creates in `DATA_DIR/session.key` (mode 0600, never in the database), mixed with a hash of the password,
+  so **changing the password logs everyone out**, and deleting `session.key` does too. Log out from the nav bar.
+- **Failed logins**: 10 failures from one address within 15 minutes block further tries from it for up to 15 minutes.
+  Behind Docker's port publishing, every client can look like the same address, so a flood of bad guesses can lock
+  you out for 15 minutes too. Restarting the container clears it.
+- **Cross-site requests**: form posts that a browser marks as coming from another site (`Sec-Fetch-Site`, `Origin`
+  or `Referer`) are refused, so a web page you visit can't submit forms to the app.
+- **Host names** (optional): set `POT_ALLOWED_HOSTS` to the names and addresses you use to reach the app, e.g.
+  `192.168.1.10,pot.lan,localhost,127.0.0.1`. Requests for any other host get a 400, which blocks DNS-rebinding
+  pages. Include `127.0.0.1` for the container healthcheck.
+- **HTTPS**: if you put the app behind an HTTPS reverse proxy, set `POT_COOKIE_SECURE=1`.
+- Every page is sent with a Content Security Policy (scripts and styles from the app only, no framing),
+  `nosniff`, `Referrer-Policy: same-origin`, and no API docs or `Server` header. `/healthz` is open for the
+  healthcheck and shows nothing.
 
 ## Test before pushing
 
 A push to `main` deploys, so try changes locally first. `scripts/test-deploy.sh` runs the image built from your
 working tree (unpushed and uncommitted changes included) on port 8001 of this machine, with its own data volume.
-Like production it listens on all interfaces and has no login, so limit who can reach port 8001 with a firewall
-(Docker's published ports skip host firewall INPUT rules: filter them in the `DOCKER-USER` chain).
+Like production it listens on all interfaces, and it uses `POT_PASSWORD` from your `.env`. A loaded snapshot holds real
+payment data, so limit who can reach port 8001 with a firewall too (Docker's published ports skip host firewall INPUT
+rules: filter them in the `DOCKER-USER` chain).
 
 ```sh
 scripts/test-deploy.sh up                                  # run the tests, build, start
@@ -147,7 +167,7 @@ scripts/test-deploy.sh down                                # stop (reset also de
 migration that would reprice anything shows up before it reaches production. `snapshot` uses SQLite's online backup
 into the production container's `/tmp`, so the live `/data` is never written to. Set `POT_CONTAINER` if the container
 isn't found automatically, and `POT_DOCKER="sudo docker"` if the server needs it. Snapshots hold real payment records:
-they stay in `data/snapshots/` (git- and docker-ignored). Anything you do in the test copy, like marking payouts paid,
+they stay in `data/snapshots/` (git- and docker-ignored, readable only by you). Anything you do in the test copy, like marking payouts paid,
 only changes the copy. The test stack always uses the Square sandbox.
 
 ## Deploy (Docker Compose / Dockge, home server)
@@ -157,13 +177,14 @@ CI builds the image on every push to `main` and publishes it to `ghcr.io/monday-
 1. On the server, log in once so it can pull the private image, using a GitHub personal access token with
    `read:packages`: `echo <token> | docker login ghcr.io -u monday-j --password-stdin`.
 2. Create the stack (in Dockge: new stack, paste `compose.yaml`) and add a `.env` next to it containing
-   `PARRY_API_KEY=<your parry.gg key>`, plus `TZ` and the optional Square settings (see `.env.example`).
+   `POT_PASSWORD=<a long random password>` and `PARRY_API_KEY=<your parry.gg key>`, plus `TZ` and the optional
+   `POT_ALLOWED_HOSTS` and Square settings (see `.env.example`).
 3. Start it. Update later with Dockge's **Update** button, or `docker compose pull && docker compose up -d`.
 
 The database lives in the `pot-data` named volume, mounted at `/data`.
 
-- **No auth**: the port is published on all interfaces so it's reachable on your LAN at `http://<host-ip>:8000`.
-  Don't port-forward it on your router.
+- **LAN only**: the port is published on all interfaces so it's reachable on your LAN at `http://<host-ip>:8000`,
+  behind the password. It's plain HTTP, so still don't port-forward it on your router.
 - **One worker only**: sync state is an in-process thread and lock, so don't add `--workers` or replicas.
 - **Backups**: the DB holds payment records. Use SQLite's online backup, not a plain file copy (it runs in WAL mode):
   `docker compose exec pot python -c "import sqlite3; s=sqlite3.connect('/data/pot.db'); d=sqlite3.connect('/data/backup.db'); s.backup(d)"`

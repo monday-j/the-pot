@@ -4,7 +4,7 @@
 <link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><link rel="icon" href="/favicon.ico" sizes="16x16 32x32 48x48">
 {% block head %}{% endblock %}</head><body>
 {% set path = request.url.path %}
-<nav><a class="brand" href="/"><img src="/static/favicon.svg" alt="" width="18" height="18">The Pot</a>
+{% block nav %}<nav><a class="brand" href="/"><img src="/static/favicon.svg" alt="" width="18" height="18">The Pot</a>
 <a href="/" class="{{ 'on' if path == '/' }}">Dashboard</a>
 <a href="/series" class="{{ 'on' if path.startswith(('/series', '/tournaments')) }}">Series</a>
 <a href="/events" class="{{ 'on' if path.startswith('/events') }}">Events</a>
@@ -12,7 +12,8 @@
 <a href="/players" class="{{ 'on' if path.startswith('/players') }}">Players</a>
 <a href="/payouts" class="{{ 'on' if path.startswith('/payouts') }}">Payouts</a>
 <a href="/venues" class="{{ 'on' if path.startswith('/venue') }}">Venues</a>
-<a href="/bank" class="{{ 'on' if path.startswith('/bank') }}">Bank</a></nav>
+<a href="/bank" class="{{ 'on' if path.startswith('/bank') }}">Bank</a>
+<form class="logout" method="post" action="/logout"><button>Log out</button></form></nav>{% endblock %}
 <main>
 {% block crumbs %}{% endblock %}
 {% if error %}<div class="strip err">{{ error }}</div>{% endif %}

@@ -7,11 +7,12 @@ from urllib.parse import quote, urlencode
 from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, Form, HTTPException, Request
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from . import bank, codes, config, db, square, sync
+from . import auth, bank, codes, config, db, square, sync
 from .parry_client import GrpcParryClient
 from . import square_auth
 from .square_client import HttpSquareClient, SquareConfigError, environment as square_environment
@@ -33,7 +34,7 @@ async def lifespan(app):
     stop.set()
 
 
-app = FastAPI(title="The Pot", lifespan=lifespan)
+app = FastAPI(title="The Pot", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
 app.mount("/static", StaticFiles(directory=BASE / "static"), name="static")
 templates = Jinja2Templates(directory=BASE / "templates")
 
@@ -125,6 +126,33 @@ def safe_next(target: str, default: str) -> str:
     return target if ok else default
 
 
+@app.middleware("http")
+async def guard(request: Request, call_next):
+    """Every request: refuse cross-site posts (CSRF), require the login, and add the security headers."""
+    path = request.url.path
+    if auth.cross_site(request.method, request.headers):
+        response = PlainTextResponse("Cross-site request refused", status_code=403)
+    elif auth.is_open(path):
+        response = await call_next(request)
+    elif not config.password():
+        response = PlainTextResponse("No password set: set POT_PASSWORD (see README)", status_code=503)
+    elif not auth.valid_session(request.cookies.get(auth.COOKIE), config.password()):
+        if request.method in ("GET", "HEAD"):
+            here = path + ("?" + request.url.query if request.url.query else "")
+            response = RedirectResponse("/login?" + urlencode({"next": here}), status_code=303)
+        else:
+            response = PlainTextResponse("Log in first", status_code=403)
+    else:
+        response = await call_next(request)
+    for name, value in auth.SECURITY_HEADERS.items():
+        response.headers.setdefault(name, value)
+    return response
+
+
+if config.allowed_hosts():  # outermost: a request for any other host name (DNS rebinding) never reaches the app
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=config.allowed_hosts())
+
+
 def describe_rule(r) -> str:
     splits = "/".join(str(x) for x in splits_from_json(r["splits"]))
     bits = [f"{money(r['bracket_fee_cents'])} bracket fee"] if r["bracket_fee_cents"] else []
@@ -187,6 +215,49 @@ def one(conn, sql, *args):
 def favicon():
     """Browsers ask for this path directly, whatever the page links."""
     return FileResponse(BASE / "static" / "favicon.ico", media_type="image/x-icon")
+
+
+@app.get("/healthz", include_in_schema=False)
+def healthz():
+    """For the container healthcheck: open without a login and touches nothing."""
+    return PlainTextResponse("ok")
+
+
+# --- login -----------------------------------------------------------------
+
+def client_key(request: Request) -> str:
+    return request.client.host if request.client else ""
+
+
+@app.get("/login")
+def login_page(request: Request, next: str = "/"):
+    return render(request, "login.html", next=safe_next(next, "/"), no_password=not config.password())
+
+
+@app.post("/login")
+def login(request: Request, password: str = Form(""), next: str = Form("/")):
+    to = safe_next(next, "/")
+    who = client_key(request)
+    if auth.locked_out(who):
+        return PlainTextResponse("Too many failed logins: try again in 15 minutes", status_code=429)
+    expected = config.password()
+    if not expected:
+        return back("/login", "No password set: set POT_PASSWORD (see README)")
+    if not auth.password_ok(password, expected):
+        auth.record_failure(who)
+        return back("/login?" + urlencode({"next": to}), "Wrong password")
+    auth.clear_failures(who)
+    response = back(to)
+    response.set_cookie(auth.COOKIE, auth.make_session(expected), max_age=auth.SESSION_SECONDS, httponly=True,
+                        samesite="lax", secure=config.cookie_secure())
+    return response
+
+
+@app.post("/logout")
+def logout():
+    response = back("/login")
+    response.delete_cookie(auth.COOKIE, httponly=True, samesite="lax", secure=config.cookie_secure())
+    return response
 
 
 # --- dashboard & series ----------------------------------------------------

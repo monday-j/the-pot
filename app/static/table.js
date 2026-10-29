@@ -1,5 +1,6 @@
 // Optional enhancement: click a header of a table.sortable to sort it, and type into
-// input[data-filter-for=<table id>] to filter its rows. Pages are fully usable without this.
+// input[data-filter-for=<table id>] to filter its rows; a select[data-autosubmit] submits its form on change.
+// Pages are fully usable without this.
 (function () {
   function value(row, i) {
     var cell = row.cells[i];
@@ -23,6 +24,9 @@
         }).forEach(function (r) { body.appendChild(r); });
       });
     });
+  });
+  document.querySelectorAll("select[data-autosubmit]").forEach(function (select) {
+    select.addEventListener("change", function () { select.form.submit(); });
   });
   document.querySelectorAll("input[data-filter-for]").forEach(function (box) {
     var table = document.getElementById(box.getAttribute("data-filter-for"));

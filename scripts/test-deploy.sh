@@ -41,7 +41,7 @@ for label, sql in [
 
 wait_up() {
     for _ in $(seq 1 60); do
-        curl -fs -o /dev/null "$URL/" && { echo "Test deployment running at $URL"; return; }
+        curl -fs -o /dev/null "$URL/healthz" && { echo "Test deployment running at $URL"; return; }
         sleep 1
     done
     echo "Not responding on $URL; recent logs:" >&2
@@ -62,13 +62,12 @@ cmd_snapshot() {
         container=$(ssh "$POT_SERVER" "$docker ps --filter ancestor=ghcr.io/monday-j/the-pot --format '{{.Names}}'" | head -1)
         [[ -n "$container" ]] || { echo "No running the-pot container found on $POT_SERVER (set POT_CONTAINER)" >&2; exit 1; }
     fi
-    mkdir -p "$SNAPSHOTS"
+    mkdir -p -m 700 "$SNAPSHOTS"
     local out="$SNAPSHOTS/pot-$(date +%Y-%m-%d-%H%M).db"
     # SQLite online backup (safe while the app runs in WAL mode) into the container's /tmp, never /data.
     ssh "$POT_SERVER" "$docker exec $container python -c \"import sqlite3; s=sqlite3.connect('/data/pot.db'); d=sqlite3.connect('/tmp/pot-snapshot.db'); s.backup(d); d.close()\""
-    ssh "$POT_SERVER" "$docker exec $container cat /tmp/pot-snapshot.db" > "$out"
+    (umask 077; ssh "$POT_SERVER" "$docker exec $container cat /tmp/pot-snapshot.db" > "$out")
     ssh "$POT_SERVER" "$docker exec $container rm -f /tmp/pot-snapshot.db"
-    chmod 644 "$out"
     echo "Saved $out ($(du -h "$out" | cut -f1)) from $container on $POT_SERVER"
 }
 
@@ -79,8 +78,9 @@ cmd_load() {
     before=$(python3 -I -c "$TOTALS" "$file")
     compose build
     compose stop pot-test >/dev/null 2>&1 || true
-    compose run --rm --no-deps -v "$(realpath "$file"):/seed.db:ro" --entrypoint sh pot-test \
-        -c 'cp /seed.db /data/pot.db && rm -f /data/pot.db-wal /data/pot.db-shm'
+    # On stdin, not a mount: the snapshot is private to you (0600), so the container's user couldn't read a mount.
+    compose run --rm -T --no-deps --entrypoint sh pot-test \
+        -c 'cat > /data/pot.db && rm -f /data/pot.db-wal /data/pot.db-shm' < "$file"
     compose up -d
     wait_up  # startup runs the migrations
     after=$(compose exec -T pot-test python -c "$TOTALS" /data/pot.db)

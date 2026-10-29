@@ -1,6 +1,19 @@
 import pytest
 
-from app import square_auth
+from app import auth, square_auth
+
+PASSWORD = "correct horse battery staple"
+
+
+@pytest.fixture(autouse=True)
+def login_settings(monkeypatch):
+    """Tests run with a known password and none of the real environment's login settings."""
+    monkeypatch.setenv("POT_PASSWORD", PASSWORD)
+    for name in ("POT_PASSWORD_FILE", "POT_ALLOWED_HOSTS", "POT_COOKIE_SECURE"):
+        monkeypatch.delenv(name, raising=False)
+    auth._failures.clear()
+    yield
+    auth._failures.clear()
 
 
 @pytest.fixture(autouse=True)

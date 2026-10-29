@@ -1,0 +1,7 @@
+{% extends "base.html" %}{% block title %}Log in · The Pot{% endblock %}
+{% block nav %}<nav><span class="brand"><img src="/static/favicon.svg" alt="" width="18" height="18">The Pot</span></nav>{% endblock %}
+{% block body %}<h1>Log in</h1>
+{% if no_password %}<div class="strip err">No password is set: add POT_PASSWORD to the server's .env and recreate the container (see README).</div>
+{% else %}<form method="post" action="/login" class="toolbar"><input type="hidden" name="next" value="{{ next }}">
+<label>Password<input type="password" name="password" autocomplete="current-password" required autofocus></label><button>Log in</button></form>{% endif %}
+{% endblock %}

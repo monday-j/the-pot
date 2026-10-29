@@ -4,7 +4,7 @@
 <h1>{{ p.gamer_tag }}</h1>
 <div class="summary"><span><b class="warn">{{ owed|money }}</b> owed</span><span><b class="ok">{{ paid|money }}</b> paid</span><span><b>{{ tournaments }}</b> tournaments</span><span><b>{{ history|length }}</b> events</span>
 <span>best finish <b>{{ best|ordinal if best else "·" }}</b></span></div>
-{% if owed %}<form method="post" action="/players/{{ p.id }}/settle" class="toolbar"><input type="hidden" name="next" value="{{ here }}">
+{% if owed %}<form method="post" action="/players/{{ p.id|urlq }}/settle" class="toolbar"><input type="hidden" name="next" value="{{ here }}">
 <label>Note (optional)<input name="note" placeholder="e.g. bank transfer"></label><button>Mark all owed as paid ({{ owed|money }})</button></form>{% endif %}
 <h2>By series and game</h2>
 <table class="sortable"><thead><tr><th>Series</th><th>Game</th><th class="r">Events</th><th class="r">Wins</th><th class="r">Best</th><th class="r">Owed</th><th class="r">Paid</th></tr></thead><tbody>

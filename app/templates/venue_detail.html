@@ -22,6 +22,7 @@
 <tr><th>% of entry fees collected (fee × attendees)</th><td><input name="entry_pct" value="{{ v.entry_pct }}" size="5"></td></tr>
 <tr><th>% of bracket fees collected (bracket fee × entrants, per event rule)</th><td><input name="bracket_pct" value="{{ v.bracket_pct }}" size="5"></td></tr>
 <tr><th>Notes</th><td><input name="notes" value="{{ v.notes }}" size="50"></td></tr>
+<tr><th>Square location id (optional; blank = your main location)</th><td><input name="square_location_id" value="{{ v.square_location_id }}" size="20"></td></tr>
 <tr><th></th><td><button>Save venue</button></td></tr></table></form>
 <p class="help">Saving recalculates unpaid venue payments for every tournament held here. Payments already marked paid are left alone and flagged if the maths now differs.</p>
 {% endblock %}

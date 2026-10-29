@@ -16,6 +16,10 @@
 {{ m.ptd(h.placement) }}<td class="r" data-v="{{ h.amount_cents or 0 }}">{% if h.payout_id %}{{ h.amount_cents|money }}{{ m.discrepancy(h.amount_cents, h.computed_cents) }}{% else %}<span class="mut">·</span>{% endif %}</td>
 <td>{{ m.status(h.status, h.paid_at) }}</td><td>{{ m.paybtn(h.payout_id, h.status, here) }}</td></tr>
 {% else %}<tr><td colspan="9" class="mut">No events yet.</td></tr>{% endfor %}</tbody></table></div>
+{% if square_payments %}<h2>Square payments <span class="n">· {{ square_payments|length }}</span></h2>
+<table class="sortable"><thead><tr><th>Time</th><th>Tournament</th><th class="r">Amount</th><th>Card</th></tr></thead><tbody>
+{% for s in square_payments %}<tr><td>{{ s.created_at|localtime }}</td><td>{{ m.tournament(s.tournament_id, s.tname) }}</td>{{ m.mtd(s.amount_cents) }}
+<td>{% if s.last_4 %}{{ s.card_brand|replace("_", " ")|title }} ··{{ s.last_4 }}{% else %}{{ s.source_type|lower }}{% endif %}{% if s.link == "auto" %} <span class="tag">auto</span>{% endif %}</td></tr>{% endfor %}</tbody></table>{% endif %}
 <h2>Also known as <span class="n">· {{ aliases|length }}</span></h2>
 <table><thead><tr><th>Tag</th><th>parry.gg user id</th><th></th></tr></thead><tbody>
 {% for a in aliases %}<tr><td>{{ a.gamer_tag }}</td><td class="mut">{{ a.id }}</td>

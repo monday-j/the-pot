@@ -11,7 +11,8 @@ CREATE TABLE IF NOT EXISTS venue (
     notes TEXT NOT NULL DEFAULT '',
     flat_cents INTEGER NOT NULL DEFAULT 0,
     entry_pct TEXT NOT NULL DEFAULT '0',
-    bracket_pct TEXT NOT NULL DEFAULT '0'
+    bracket_pct TEXT NOT NULL DEFAULT '0',
+    square_location_id TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS series (
     id INTEGER PRIMARY KEY,
@@ -118,6 +119,25 @@ CREATE TABLE IF NOT EXISTS venue_payment (
     paid_at TEXT,
     note TEXT NOT NULL DEFAULT ''
 );
+-- Payments pulled from Square for a tournament. player_id is set by hand ('manual') or from a card seen before ('auto').
+CREATE TABLE IF NOT EXISTS square_payment (
+    id TEXT PRIMARY KEY,
+    tournament_id TEXT NOT NULL REFERENCES tournament(id) ON DELETE CASCADE,
+    player_id TEXT REFERENCES player(id) ON DELETE SET NULL,
+    link TEXT NOT NULL DEFAULT 'none',
+    ignored INTEGER NOT NULL DEFAULT 0,
+    amount_cents INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    source_type TEXT NOT NULL DEFAULT '',
+    card_brand TEXT NOT NULL DEFAULT '',
+    last_4 TEXT NOT NULL DEFAULT '',
+    fingerprint TEXT NOT NULL DEFAULT '',
+    cardholder_name TEXT NOT NULL DEFAULT '',
+    note TEXT NOT NULL DEFAULT '',
+    receipt_url TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_square_tournament ON square_payment(tournament_id);
+CREATE INDEX IF NOT EXISTS idx_square_fingerprint ON square_payment(fingerprint);
 CREATE INDEX IF NOT EXISTS idx_payout_player ON payout(player_id);
 CREATE INDEX IF NOT EXISTS idx_event_tournament ON event(tournament_id);
 CREATE INDEX IF NOT EXISTS idx_tournament_series ON tournament(series_id);
@@ -181,6 +201,9 @@ ADDED_COLUMNS = {
         "venue_flat_cents": "INTEGER NOT NULL DEFAULT 0",
         "venue_entry_pct": "TEXT NOT NULL DEFAULT '0'",
         "venue_bracket_pct": "TEXT NOT NULL DEFAULT '0'",
+    },
+    "venue": {
+        "square_location_id": "TEXT NOT NULL DEFAULT ''",
     },
     "venue_payment": {
         "venue_id": "INTEGER REFERENCES venue(id) ON DELETE SET NULL",

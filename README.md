@@ -38,6 +38,15 @@ you've paid them and what you still owe. Local-only (no auth), SQLite, run as a 
   paid on the tournament page, the venue's page or the venue payments ledger. Like player payouts, a paid amount (and
   the venue it was paid to) is never changed by a re-sync or a venue edit; a changed calculation shows a `≠` marker.
   Databases from before venues existed get one venue per distinct series venue name and cut on upgrade.
+- **Square** (optional, card taps at the venue): on a tournament page, "Pull payments from Square" fetches the
+  completed payments (net of refunds) taken that day, from midnight until 6am the next morning in your `TZ`, at the
+  venue's Square location if it has one set. They are compared with what attendees should have paid (entry fee + the
+  bracket fee of each event entered) so a count or total mismatch stands out. Link each payment to a player to see who
+  is unpaid, short or overpaid. A card you've linked to a player is linked to them automatically at later tournaments
+  they attend (by Square's card fingerprint), but only when that's unambiguous: a card you've linked to more than one
+  player is never auto-linked, and a second payment from the same card in one night stays unlinked (someone paying for
+  a friend). Auto-links are tagged "auto". Payments that aren't fees can be ignored, and a payment is only ever counted
+  for one tournament.
 - Payouts are only calculated for events whose placements are **finalised** (complete on parry.gg, with a single 1st
   place). Others are flagged on the dashboard, series, tournament and event pages until fixed on parry.gg and re-synced.
 - **UI**: server-rendered, table-first, with every player, event, tournament, series and game linking to its page, plus
@@ -56,6 +65,12 @@ DATA_DIR=./data .venv/bin/uvicorn app.main:app --reload
 
 `.env` is git-ignored. The key is read at runtime only and is never stored in the database or logs.
 
+For Square, create an app in the [Square Developer dashboard](https://developer.squareup.com/apps) and put its access
+token (Credentials page; the app id isn't needed) in `SQUARE_API_KEY`. Use the sandbox token with `SQUARE_ENV=sandbox`
+to try it out, then the production token with `SQUARE_ENV=production`. It only reads payments (`PAYMENTS_READ`). Set `TZ` to your local time zone (e.g.
+`Australia/Hobart`) so each tournament's day is right. If you have more than one Square location, put the venue's
+location id on its venue page. The only code that talks to Square is `app/square_client.py`.
+
 Then open http://127.0.0.1:8000. The database is `data/pot.db` (git-ignored). The app has no login, so keep it on
 localhost or a trusted network.
 
@@ -66,7 +81,7 @@ CI builds the image on every push to `main` and publishes it to `ghcr.io/monday-
 1. On the server, log in once so it can pull the private image, using a GitHub personal access token with
    `read:packages`: `echo <token> | docker login ghcr.io -u monday-j --password-stdin`.
 2. Create the stack (in Dockge: new stack, paste `compose.yaml`) and add a `.env` next to it containing
-   `PARRY_API_KEY=<your parry.gg key>` (see `.env.example`).
+   `PARRY_API_KEY=<your parry.gg key>`, plus `TZ` and the optional Square settings (see `.env.example`).
 3. Start it. Update later with Dockge's **Update** button, or `docker compose pull && docker compose up -d`.
 
 The database lives in the `pot-data` named volume, mounted at `/data`.

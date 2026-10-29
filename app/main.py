@@ -1,16 +1,18 @@
 from contextlib import asynccontextmanager
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from urllib.parse import quote, urlencode
+from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from . import codes, config, db, sync
+from . import codes, config, db, square, sync
 from .parry_client import GrpcParryClient
+from .square_client import HttpSquareClient
 from .payouts import (Rule, RuleError, VenueCut, compute_payouts, parse_splits, pool_breakdown, splits_from_json,
                       splits_to_json, venue_breakdown)
 
@@ -38,7 +40,17 @@ def ordinal(n) -> str:
     return f"{n}{'th' if 10 <= n % 100 <= 20 else {1: 'st', 2: 'nd', 3: 'rd'}.get(n % 10, 'th')}"
 
 
+def localtime(stamp: str) -> str:
+    """A Square RFC 3339 UTC time in the tournaments' local time zone (TZ)."""
+    try:
+        when = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    except ValueError:
+        return stamp
+    return when.astimezone(ZoneInfo(config.TIMEZONE)).strftime("%Y-%m-%d %H:%M")
+
+
 templates.env.filters["money"] = money
+templates.env.filters["localtime"] = localtime
 templates.env.filters["ordinal"] = ordinal
 templates.env.filters["fromjson"] = lambda text: [str(x) for x in splits_from_json(text)]
 templates.env.filters["urlq"] = lambda text: quote(str(text), safe="")
@@ -88,7 +100,8 @@ def to_pct(text: str) -> Decimal:
 
 def back(url: str, error: str | None = None):
     if error:
-        url += ("&" if "?" in url else "?") + "error=" + quote(error)
+        url, hash_, fragment = url.partition("#")
+        url += ("&" if "?" in url else "?") + "error=" + quote(error) + hash_ + fragment
     return RedirectResponse(url, status_code=303)
 
 
@@ -415,6 +428,46 @@ def delete_period(period_id: int):
     return back(f"/series/{p['series_id']}")
 
 
+# --- Square ----------------------------------------------------------------
+
+@app.post("/tournaments/{tournament_id}/square/pull")
+def square_pull(tournament_id: str):
+    to = f"/tournaments/{tournament_id}#square"
+    with db.session() as conn:
+        one(conn, "SELECT id FROM tournament WHERE id=?", tournament_id)
+    if not config.square_token():
+        return back(to, "No Square API key configured (SQUARE_API_KEY)")
+    try:
+        client = HttpSquareClient()
+        try:
+            with db.session() as conn:
+                square.pull_tournament(conn, client, tournament_id)
+        finally:
+            client.close()
+    except Exception as e:  # shown in the UI; never includes the token
+        return back(f"/tournaments/{tournament_id}", f"{type(e).__name__}: {e}")
+    return back(to)
+
+
+@app.post("/square-payments/{payment_id}/link")
+def square_link(payment_id: str, player_id: str = Form("")):
+    try:
+        with db.session() as conn:
+            p = one(conn, "SELECT * FROM square_payment WHERE id=?", payment_id)
+            square.link_payment(conn, payment_id, player_id.strip() or None)
+    except RuleError as e:
+        return back(f"/tournaments/{p['tournament_id']}", str(e))
+    return back(f"/tournaments/{p['tournament_id']}#square")
+
+
+@app.post("/square-payments/{payment_id}/ignore")
+def square_ignore(payment_id: str):
+    with db.session() as conn:
+        p = one(conn, "SELECT * FROM square_payment WHERE id=?", payment_id)
+        conn.execute("UPDATE square_payment SET ignored = 1 - ignored WHERE id=?", (payment_id,))
+    return back(f"/tournaments/{p['tournament_id']}#square")
+
+
 # --- rules -----------------------------------------------------------------
 
 @app.post("/series/{series_id}/rules")
@@ -502,8 +555,9 @@ def tournament_page(request: Request, tournament_id: str):
                      "payment": conn.execute("SELECT * FROM venue_payment WHERE tournament_id=?",
                                              (tournament_id,)).fetchone()}
         venues = venue_options(conn)
+        recon = square.reconcile(conn, tournament_id)
     return render(request, "tournament.html", t=t, events=events, attendees=list(attendees.values()), venue=venue,
-                  venues=venues)
+                  venues=venues, recon=recon, has_square=bool(config.square_token()))
 
 
 @app.get("/events")
@@ -671,6 +725,10 @@ def player_page(request: Request, player_id: str):
                                   LEFT JOIN payout po ON po.event_id=e.id AND po.player_id=ee.player_id
                                   WHERE ee.player_id=? ORDER BY t.start_date DESC, e.name""", (player_id,)).fetchall()
         tournaments = conn.execute("SELECT COUNT(*) FROM tournament_entry_c WHERE player_id=?", (player_id,)).fetchone()[0]
+        square_payments = conn.execute("""SELECT sp.*, t.name AS tname, t.start_date FROM square_payment sp
+                                          JOIN tournament t ON t.id=sp.tournament_id JOIN player a ON a.id=sp.player_id
+                                          WHERE COALESCE(a.merged_into, a.id)=? AND sp.ignored=0
+                                          ORDER BY sp.created_at DESC""", (player_id,)).fetchall()
     owed = sum(h["amount_cents"] for h in history if h["status"] == "owed")
     paid = sum(h["amount_cents"] for h in history if h["status"] == "paid")
     best = min((h["placement"] for h in history if h["placement"]), default=None)
@@ -686,7 +744,7 @@ def player_page(request: Request, player_id: str):
         if h["status"]:
             row[h["status"]] += h["amount_cents"]
     return render(request, "player.html", p=p, history=history, owed=owed, paid=paid, tournaments=tournaments,
-                  aliases=aliases, others=others, best=best, totals=sorted(totals.values(), key=lambda r: (r["sname"] or "", r["game"])))
+                  aliases=aliases, others=others, square_payments=square_payments, best=best, totals=sorted(totals.values(), key=lambda r: (r["sname"] or "", r["game"])))
 
 
 @app.post("/players/{player_id}/merge")
@@ -748,7 +806,7 @@ def venues_page(request: Request):
     return render(request, "venues.html", venues=venues)
 
 
-def save_venue_form(conn, venue_id, name, notes, flat, entry_pct, bracket_pct) -> int:
+def save_venue_form(conn, venue_id, name, notes, flat, entry_pct, bracket_pct, square_location_id="") -> int:
     name = name.strip()
     if not name:
         raise RuleError("Enter a venue name")
@@ -756,12 +814,12 @@ def save_venue_form(conn, venue_id, name, notes, flat, entry_pct, bracket_pct) -
     if other:
         raise RuleError(f"There is already a venue called {name}")
     cut = parse_venue(flat, entry_pct, bracket_pct)
-    values = (name, notes.strip(), cut.flat, str(cut.entry_pct), str(cut.bracket_pct))
+    values = (name, notes.strip(), cut.flat, str(cut.entry_pct), str(cut.bracket_pct), square_location_id.strip())
     if venue_id is None:
-        return conn.execute("INSERT INTO venue (name, notes, flat_cents, entry_pct, bracket_pct) VALUES (?,?,?,?,?)",
-                            values).lastrowid
-    conn.execute("UPDATE venue SET name=?, notes=?, flat_cents=?, entry_pct=?, bracket_pct=? WHERE id=?",
-                 (*values, venue_id))
+        return conn.execute("""INSERT INTO venue (name, notes, flat_cents, entry_pct, bracket_pct, square_location_id)
+                               VALUES (?,?,?,?,?,?)""", values).lastrowid
+    conn.execute("""UPDATE venue SET name=?, notes=?, flat_cents=?, entry_pct=?, bracket_pct=?, square_location_id=?
+                    WHERE id=?""", (*values, venue_id))
     sync.recompute_venue_tournaments(conn, venue_id)
     return venue_id
 
@@ -798,11 +856,11 @@ def venue_detail(request: Request, venue_id: int):
 
 @app.post("/venues/{venue_id}")
 def update_venue(venue_id: int, name: str = Form(...), notes: str = Form(""), flat: str = Form("0"),
-                 entry_pct: str = Form("0"), bracket_pct: str = Form("0")):
+                 entry_pct: str = Form("0"), bracket_pct: str = Form("0"), square_location_id: str = Form("")):
     try:
         with db.session() as conn:
             one(conn, "SELECT id FROM venue WHERE id=?", venue_id)
-            save_venue_form(conn, venue_id, name, notes, flat, entry_pct, bracket_pct)
+            save_venue_form(conn, venue_id, name, notes, flat, entry_pct, bracket_pct, square_location_id)
     except RuleError as e:
         return back(f"/venues/{venue_id}", str(e))
     return back(f"/venues/{venue_id}")

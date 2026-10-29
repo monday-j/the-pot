@@ -261,8 +261,9 @@ def expected_by_player(conn, tournament_id: str) -> dict:
 
 
 def reconcile(conn, tournament_id: str) -> dict:
-    """Expected vs taken, per player and in total. Ignored payments don't count, and neither do fully refunded
-    ones (stored at $0), apart from their card fees: Square's payment data doesn't say whether it gave those back."""
+    """Expected vs taken, per player and in total. Payments marked "not a fee" (ignored) don't count, and neither do
+    fully refunded ones (stored at $0), apart from their card fees: Square's payment data doesn't say whether it gave
+    those back. Payments marked "no player needed" count, but aren't asked to be linked (#30)."""
     expected = expected_by_player(conn, tournament_id)
     payments = conn.execute("""SELECT sp.*, COALESCE(a.merged_into, sp.player_id) AS pid, p.gamer_tag
                                FROM square_payment sp LEFT JOIN player a ON a.id=sp.player_id
@@ -289,6 +290,7 @@ def reconcile(conn, tournament_id: str) -> dict:
         players.append({"id": pid, "tag": tags.get(pid, pid), "expected": want, "paid": got, "diff": got - want,
                         "state": state, "note": resolved.get(pid)})
     unlinked = [p for p in counted if not p["pid"]]
+    to_link = [p for p in unlinked if not p["no_player"]]
     if unlinked:  # card taps carry no names: until they're linked, "unpaid" may just mean "not matched yet"
         for r in players:
             if r["state"] == "unpaid":
@@ -305,7 +307,8 @@ def reconcile(conn, tournament_id: str) -> dict:
     return {"payments": payments, "players": players, "expected": expected_total, "taken": taken,
             "fees": fees, "net": taken - fees, "banked": banked, "fees_pending": sum(1 for p in counted if p["fee_cents"] is None),
             "difference": taken - expected_total, "attendees": len(expected), "count": len(counted),
-            "unlinked": len(unlinked), "unlinked_cents": sum(p["amount_cents"] for p in unlinked),
+            "unlinked": len(to_link), "unlinked_cents": sum(p["amount_cents"] for p in to_link),
+            "no_player": len(unlinked) - len(to_link),
             "unmatched": sum(1 for r in players if r["state"] == "unmatched"),
             "shortfall": max(expected_total - taken - waived, 0), "refunded": len(refunded),
             "refunded_fees": sum(p["fee_cents"] or 0 for p in refunded),
@@ -315,9 +318,9 @@ def reconcile(conn, tournament_id: str) -> dict:
 def payment_issues(conn, series_id: int | None = None) -> list[dict]:
     """Tournaments whose Square reconciliation needs attention, each with a `kind`:
 
-    "missing": linked players are unpaid or short (players, missing), or, with payments still to link, less was taken
-    than expected overall (players 0, missing = the shortfall). "link": nothing is known to be missing, but payments
-    still need linking to players. Only tournaments with Square payments pulled are checked: one never pulled (or a
+    "missing": linked players are short, or unpaid with every payment linked (players, missing), or less was taken
+    than expected overall (players 0, missing = the shortfall). "link": nothing is missing, but payments still need
+    linking to players or marking "no player needed" (#30). Only tournaments with Square payments pulled are checked: one never pulled (or a
     series not using Square) would otherwise show everyone as unpaid. Excluded tournaments are skipped.
     """
     out = []
@@ -332,7 +335,7 @@ def payment_issues(conn, series_id: int | None = None) -> list[dict]:
                "unlinked": r["unlinked"], "unlinked_cents": r["unlinked_cents"]}
         if missing:
             out.append({**row, "kind": "missing"})
-        elif r["unmatched"] and r["shortfall"]:
+        elif r["shortfall"]:
             out.append({**row, "kind": "missing", "missing": r["shortfall"]})
         elif r["unlinked"]:
             out.append({**row, "kind": "link"})

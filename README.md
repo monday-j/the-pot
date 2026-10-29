@@ -46,7 +46,11 @@ you've paid them and what you still owe. For your LAN, behind one shared passwor
   are linked to them, at every tournament, past and future: a second payment the same night, or one where they didn't
   enter, then shows them as overpaid. Payments you've linked or unlinked by hand are never changed, and a card you've
   linked to more than one player (someone paying for a friend) isn't linked automatically any more. Auto-links are
-  tagged "auto". Payments that aren't fees can be ignored, and a payment is only ever counted for one tournament.
+  tagged "auto". What matters most is that the total taken covers what was expected: mark a payment you can't or
+  needn't match to anyone **No player needed** and it still counts, without asking to be linked. Mark payments that
+  aren't tournament fees (e.g. a drink) **Not a fee** to leave them out. A payment is only ever counted for one
+  tournament. A tournament needs attention when less was taken than expected, a linked player paid too little, or
+  payments are neither linked nor marked.
   When an entrant's fee was sorted out some other way (someone else paid for them, or it was waived), mark them
   **Sorted out** in the "Who paid" table with a note saying how: they no longer count as unpaid or missing.
 - **Card fees**: each Square payment's processing fee (as Square reports it, tax adjustments included) is stored and

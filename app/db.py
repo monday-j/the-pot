@@ -160,12 +160,14 @@ CREATE TABLE IF NOT EXISTS square_payout_entry (
 CREATE INDEX IF NOT EXISTS idx_payout_entry_payment ON square_payout_entry(payment_id);
 -- Payments pulled from Square for a tournament. player_id is set by hand ('manual') or from a card linked by hand before
 -- ('auto'); link is 'unlinked' for one unlinked by hand, which its card's links then leave alone, else 'none'.
+-- ignored: not a tournament fee (e.g. a drink), so it isn't counted as taken; no_player: counted, but no player needed.
 CREATE TABLE IF NOT EXISTS square_payment (
     id TEXT PRIMARY KEY,
     tournament_id TEXT NOT NULL REFERENCES tournament(id) ON DELETE CASCADE,
     player_id TEXT REFERENCES player(id) ON DELETE SET NULL,
     link TEXT NOT NULL DEFAULT 'none',
     ignored INTEGER NOT NULL DEFAULT 0,
+    no_player INTEGER NOT NULL DEFAULT 0,  -- counts toward takings, but needn't be linked to a player (#30)
     amount_cents INTEGER NOT NULL,
     fee_cents INTEGER,  -- Square's processing fee; NULL until Square has added it
     created_at TEXT NOT NULL,
@@ -264,6 +266,7 @@ ADDED_COLUMNS = {
         "square_location_id": "TEXT NOT NULL DEFAULT ''",
     },
     "square_payment": {
+        "no_player": "INTEGER NOT NULL DEFAULT 0",
         "fee_cents": "INTEGER",
         "deposit_id": "INTEGER REFERENCES bank_deposit(id) ON DELETE SET NULL",
     },

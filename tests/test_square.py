@@ -241,13 +241,17 @@ def test_square_pages(client, monkeypatch):  # noqa: F811
     fake = FakeSquare([pay("P1", 500, "fp-a"), pay("P2", 500, "fp-b")])
     monkeypatch.setattr(main, "HttpSquareClient", lambda: fake)
     page = client.post("/tournaments/t1/square/pull").text
-    assert "$10.00</b> taken in 2 payments" in page and "2</b> not linked" in page
+    assert "$10.00</b> taken in 2 payments" in page and "2</b> to link to a player" in page
     page = client.post("/square-payments/P1/link", data={"player_id": "u1"}).text
-    assert "1</b> not linked" in page
-    page = client.post("/square-payments/P2/ignore").text
-    assert "$5.00</b> taken in 1 payments" in page and "Count" in page
+    assert "1</b> to link to a player" in page
+    page = client.post("/square-payments/P2/no-player").text  # still taken, just not asked to be linked
+    assert "$10.00</b> taken in 2 payments" in page and "0</b> to link to a player" in page
+    assert "(+1 with no player needed)" in page and "Needs a player" in page
+    page = client.post("/square-payments/P2/ignore").text  # not a fee: left out of the total
+    assert "$5.00</b> taken in 1 payments" in page and "Count as a fee" in page
     assert "Square payments" in client.get("/players/u1").text
     assert client.post("/square-payments/nope/ignore").status_code == 404
+    assert client.post("/square-payments/P2/delete").status_code == 404
 
 
 def test_http_client_pages_and_reports_errors(monkeypatch):
@@ -722,3 +726,30 @@ def test_square_pulls_leave_locked_tournaments_alone(fnb):
     r = square.pull_series(fnb, client, 1)
     assert (r["tournaments"], r["new"]) == (1, 1)  # t3 only
     assert fnb.execute("SELECT amount_cents FROM square_payment WHERE id='P1'").fetchone()[0] == 1000  # not refreshed
+
+
+
+def test_payments_needing_no_player_count_but_arent_asked_to_be_linked(fnb):
+    # four $10 entries; two taps linked, two that can't be matched to anyone (#30)
+    square.pull_tournament(fnb, FakeSquare([pay("P1", 1000, "fp-a"), pay("P2", 1000, "fp-b"), pay("P3", 1000, "fp-c"),
+                                            pay("P4", 1000, "fp-d")]), "t1")
+    square.link_payment(fnb, "P1", "u1")
+    square.link_payment(fnb, "P2", "u2")
+    [i] = square.payment_issues(fnb)
+    assert (i["kind"], i["unlinked"]) == ("link", 2)
+    fnb.execute("UPDATE square_payment SET no_player=1 WHERE id IN ('P3', 'P4')")
+    r = square.reconcile(fnb, "t1")
+    assert (r["taken"], r["unlinked"], r["no_player"], r["shortfall"]) == (4000, 0, 2, 0)
+    assert {p["id"]: p["state"] for p in r["players"]}["u3"] == "unmatched"  # not unpaid: the total covers them
+    assert square.payment_issues(fnb) == []
+    fnb.execute("UPDATE square_payment SET ignored=1 WHERE id='P4'")  # not a fee after all: now $10 short
+    [i] = square.payment_issues(fnb)
+    assert (i["kind"], i["players"], i["missing"]) == ("missing", 0, 1000)
+
+
+def test_a_linked_player_short_is_flagged_even_when_the_total_covers_it(fnb):
+    square.pull_tournament(fnb, FakeSquare([pay("P1", 500, "fp-a"), pay("P2", 3500, "fp-b")]), "t1")
+    square.link_payment(fnb, "P1", "u1")  # Alice paid $5 of $10
+    fnb.execute("UPDATE square_payment SET no_player=1 WHERE id='P2'")
+    [i] = square.payment_issues(fnb)
+    assert (i["kind"], i["players"], i["missing"]) == ("missing", 1, 500)

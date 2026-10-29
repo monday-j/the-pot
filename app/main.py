@@ -709,13 +709,17 @@ def square_link(payment_id: str, player_id: str = Form("")):
     return back(f"/tournaments/{p['tournament_id']}#square")
 
 
-@app.post("/square-payments/{payment_id}/ignore")
-def square_ignore(payment_id: str):
+@app.post("/square-payments/{payment_id}/{flag}")
+def square_flag(payment_id: str, flag: str):
+    """Toggle "not a fee" (ignore: not counted as taken) or "no player needed" (counted, needn't be linked; #30)."""
+    column = {"ignore": "ignored", "no-player": "no_player"}.get(flag)
+    if column is None:
+        raise HTTPException(404)
     try:
         with db.session() as conn:
             p = one(conn, "SELECT * FROM square_payment WHERE id=?", payment_id)
             square.check_unlocked(conn, p["tournament_id"])
-            conn.execute("UPDATE square_payment SET ignored = 1 - ignored WHERE id=?", (payment_id,))
+            conn.execute(f"UPDATE square_payment SET {column} = 1 - {column} WHERE id=?", (payment_id,))
             square.lock_clear_tournaments(conn)
     except RuleError as e:
         return back(f"/tournaments/{p['tournament_id']}", str(e))

@@ -44,7 +44,7 @@
 <span><b class="{{ 'warn' if recon.unlinked }}">{{ recon.unlinked }}</b> not linked to a player</span>
 <span><b class="{{ 'bad' if recon.problems }}">{{ recon.problems }}</b> players unpaid, short or over</span>
 {% if recon.unmatched %}<span><b class="warn">{{ recon.unmatched }}</b> player{{ "s" if recon.unmatched != 1 }} not matched to a payment yet ({{ recon.unlinked }} payment{{ "s" if recon.unlinked != 1 }} to link)</span>{% endif %}{% endif %}</div>
-{% set sq = square_setup %}<form method="post" action="/tournaments/{{ t.id }}/square/pull" class="toolbar"><button class="sec" {{ "disabled" if not sq.env }}>Pull payments from Square</button>
+{% set sq = square_setup %}<form method="post" action="/tournaments/{{ t.id }}/square/pull" class="toolbar"><button class="sec" {{ "disabled" if not sq.env or t.locked_by }}>Pull payments from Square</button>
 {% if not sq.token %}<span class="mut">Give the app read-only Square access (see the README) to pull payments.</span>{% elif sq.error %}<span class="bad">{{ sq.error }}</span>{% else %}<span class="tag" title="SQUARE_ENV">Square: {{ sq.env }}</span> <span class="mut">Payments on {{ t.start_date }} (until 6am the next day){% if venue and venue.info.venue_id %} at the venue's Square location{% endif %}.</span>{% endif %}</form>
 {% if recon.payments %}
 <div class="tw"><table class="sortable"><thead><tr><th>Time</th><th class="r">Amount</th><th class="r">Fee</th><th>Card</th><th>Name / note</th><th>Player</th><th></th></tr></thead><tbody>

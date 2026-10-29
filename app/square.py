@@ -78,6 +78,8 @@ def _store(conn, tournament_id: str | None, p, counts: dict):
     row = conn.execute("SELECT * FROM square_payment WHERE id=?", (p.id,)).fetchone()
     fields = (p.amount_cents, p.fee_cents, p.created_at, p.source_type, p.card_brand, p.last_4, p.fingerprint,
               p.cardholder_name, p.note, p.receipt_url)
+    if row and sync.locked(conn, "SELECT locked_by FROM tournament WHERE id=?", row["tournament_id"]):
+        return  # its tournament is locked by a bank reconciliation (#28)
     if row:
         conn.execute("""UPDATE square_payment SET amount_cents=?, fee_cents=?, created_at=?, source_type=?, card_brand=?,
                         last_4=?, fingerprint=?, cardholder_name=?, note=?, receipt_url=? WHERE id=?""", (*fields, p.id))
@@ -129,13 +131,16 @@ def pull_tournament(conn, client: SquareClient, tournament_id: str) -> dict:
     t = conn.execute("SELECT * FROM tournament WHERE id=?", (tournament_id,)).fetchone()
     if not t["start_date"]:
         raise RuleError("This tournament has no date, so its Square payments can't be found")
+    check_unlocked(conn, tournament_id)
     return pull_tournaments(conn, client, [tournament_id])
 
 
 def pull_series(conn, client: SquareClient, series_id: int, since: str | None = None) -> dict:
-    """Pull every dated, non-excluded tournament of a series (only those on or after `since`, if given)."""
+    """Pull every dated, non-excluded tournament of a series (only those on or after `since`, if given) that isn't
+    locked by a bank reconciliation."""
     ids = [r[0] for r in conn.execute(
         """SELECT id FROM tournament WHERE series_id=? AND excluded=0 AND COALESCE(start_date, '') != ''
+           AND locked_by IS NULL
            AND (? IS NULL OR start_date >= ?) ORDER BY start_date""", (series_id, since, since))]
     return {**pull_tournaments(conn, client, ids), "tournaments": len(ids)}
 

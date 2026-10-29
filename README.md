@@ -63,7 +63,8 @@ you've paid them and what you still owe. For your LAN, behind one shared passwor
   venues it took in (they can't be undone or edited), and every tournament up to then with no issues left (no
   payments missing or to link, all events final). Tournaments with issues stay editable (payment links, ignores,
   "sorted out") and lock as soon as they're clear. A locked tournament's settings, payouts and payment links can't
-  change and it isn't recomputed. Undo the latest reconciliation, one at a time, to unlock.
+  change and it isn't recomputed. Syncing from parry.gg and pulling from Square skip locked tournaments, so a long
+  series only re-reads what's still open. Undo the latest reconciliation, one at a time, to unlock (and re-import).
 - **Pulling a whole series**: "Pull Square payments (all tournaments)" on the series page pulls every tournament in the
   background with a single Square query per location (spanning all their dates, then filing each payment under the
   night it belongs to), so a season costs a few requests rather than one per night. Set `SQUARE_AUTO_PULL_HOURS`

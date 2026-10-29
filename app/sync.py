@@ -364,7 +364,8 @@ def import_tournament(conn, client: ParryClient, series_id: int, tournament_id: 
 
 
 def sync_series(conn, client: ParryClient, series_id: int) -> dict:
-    """Idempotent: discover by custom slug (or name pattern), add manual tournaments, import each, recompute payouts."""
+    """Idempotent: discover by custom slug (or name pattern), add manual tournaments, import each, recompute payouts.
+    Tournaments locked by a bank reconciliation are skipped (#28): re-reading a long series is what takes the time."""
     series = conn.execute("SELECT * FROM series WHERE id=?", (series_id,)).fetchone()
     excluded = {r["id"] for r in conn.execute("SELECT id FROM tournament WHERE excluded=1")}
     if series["custom_slug"]:
@@ -375,6 +376,9 @@ def sync_series(conn, client: ParryClient, series_id: int) -> dict:
     wanted |= {r["id"] for r in conn.execute(
         "SELECT id FROM tournament WHERE series_id=? AND manual=1", (series_id,))}
     wanted -= excluded
+    locked_ids = {r["id"] for r in conn.execute("SELECT id FROM tournament WHERE locked_by IS NOT NULL")}
+    skipped = len(wanted & locked_ids)
+    wanted -= locked_ids
     imported = 0
     for tid in sorted(wanted):
         other = conn.execute("SELECT series_id FROM tournament WHERE id=?", (tid,)).fetchone()
@@ -384,11 +388,13 @@ def sync_series(conn, client: ParryClient, series_id: int) -> dict:
         imported += 1
     recompute_series(conn, series_id)
     conn.execute("UPDATE series SET last_synced=? WHERE id=?", (now(), series_id))
-    return {"tournaments": imported}
+    return {"tournaments": imported, "locked": skipped}
 
 
 def add_manual_tournament(conn, client: ParryClient, series_id: int, text: str):
     info = client.get_tournament(text)
+    if locked(conn, "SELECT locked_by FROM tournament WHERE id=?", info.id):
+        raise RuleError(f"{info.name} is locked by a bank reconciliation: undo it to import the tournament again")
     conn.execute("UPDATE tournament SET excluded=0 WHERE id=?", (info.id,))
     import_tournament(conn, client, series_id, info.id, manual=True)
     recompute_series(conn, series_id)
@@ -418,7 +424,10 @@ def start_sync(series_id: int, client_factory, after=None) -> bool:
                         after(conn)
             finally:
                 getattr(client, "close", lambda: None)()
-            status[series_id] = {"state": "done", "message": f"Imported {result['tournaments']} tournaments"}
+            message = f"Imported {result['tournaments']} tournaments"
+            if result["locked"]:
+                message += f", skipped {result['locked']} locked by a bank reconciliation"
+            status[series_id] = {"state": "done", "message": message}
         except Exception as e:  # surfaced in the UI; never include request metadata
             status[series_id] = {"state": "error", "message": f"{type(e).__name__}: {e}"}
 

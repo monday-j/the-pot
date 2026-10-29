@@ -466,3 +466,39 @@ def test_init_moves_game_rules_into_a_first_period(tmp_path, monkeypatch):
     c.execute("INSERT INTO series_period (id, series_id, starts_on) VALUES (9, 1, '2026-05-01')")
     c.execute("INSERT INTO rule (series_id, period_id, game_name) VALUES (1, 9, 'Smash Ultimate')")  # allowed now
     c.close()
+
+
+class CountingClient(TwoNightsClient):
+    """Records which tournaments and events are read from parry.gg."""
+    def __init__(self):
+        super().__init__()
+        self.reads = []
+
+    def get_tournament(self, identifier, is_id=False):
+        self.reads.append(("tournament", identifier))
+        return super().get_tournament(identifier, is_id)
+
+    def get_attendees(self, tid):
+        self.reads.append(("attendees", tid))
+        return super().get_attendees(tid)
+
+    def get_event_placements(self, eid):
+        self.reads.append(("placements", eid))
+        return super().get_event_placements(eid)
+
+
+def test_tournaments_locked_by_a_reconciliation_are_not_read_again(conn):
+    conn.execute("UPDATE series SET custom_slug='fnb' WHERE id=1")
+    sync.sync_series(conn, TwoNightsClient(), 1)
+    rid = conn.execute("""INSERT INTO reconciliation (reconciled_on, balance_cents, expected_cents, created_at)
+                          VALUES ('2026-01-05', 0, 0, '')""").lastrowid
+    conn.execute("UPDATE tournament SET locked_by=? WHERE id='t1'", (rid,))
+    client = CountingClient()
+    assert sync.sync_series(conn, client, 1) == {"tournaments": 1, "locked": 1}
+    assert {r[1] for r in client.reads} == {"t3", "e3"}  # nothing about t1 or its event
+    with pytest.raises(sync.RuleError, match="locked by a bank reconciliation"):
+        sync.add_manual_tournament(conn, client, 1, "t1")
+    conn.execute("DELETE FROM reconciliation")  # undone: read again
+    client = CountingClient()
+    assert sync.sync_series(conn, client, 1) == {"tournaments": 2, "locked": 0}
+    assert ("tournament", "t1") in client.reads

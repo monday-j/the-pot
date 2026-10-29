@@ -567,7 +567,7 @@ def square_pull(tournament_id: str):
                 square.lock_clear_tournaments(conn)
         finally:
             client.close()
-    except SquareConfigError as e:
+    except (SquareConfigError, RuleError) as e:
         return back(f"/tournaments/{tournament_id}", str(e))
     except Exception as e:  # shown in the UI; never includes the token
         return back(f"/tournaments/{tournament_id}", f"{type(e).__name__}: {e}")

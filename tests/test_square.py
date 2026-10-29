@@ -706,3 +706,19 @@ def test_sorting_out_an_entrant_on_the_page(client, monkeypatch):  # noqa: F811
     assert "sorted out</span> <span class=\"mut\">paid by Alice</span>" in page
     page = client.post("/tournaments/t1/entrants/u2/resolve", data={"undo": "1"}).text
     assert "paid by Alice" not in page
+
+
+def test_square_pulls_leave_locked_tournaments_alone(fnb):
+    from dataclasses import replace
+    square.pull_tournament(fnb, FakeSquare([pay("P1", 1000, "fp-a")]), "t1")
+    rid = fnb.execute("""INSERT INTO reconciliation (reconciled_on, balance_cents, expected_cents, created_at)
+                         VALUES ('2026-01-05', 0, 0, '')""").lastrowid
+    fnb.execute("UPDATE tournament SET locked_by=? WHERE id='t1'", (rid,))
+    with pytest.raises(RuleError, match="Locked by the bank reconciliation of 2026-01-05"):
+        square.pull_tournament(fnb, FakeSquare(), "t1")
+    # Square now reports P1 refunded (and, say, at a time in t3's window): its locked tournament keeps it as it was
+    client = FakeSquare([replace(pay("P1", 0, "fp-a", "2026-01-08T09:30:00Z"), fee_cents=22),
+                         pay("P9", 1000, when="2026-01-08T09:00:00Z")])
+    r = square.pull_series(fnb, client, 1)
+    assert (r["tournaments"], r["new"]) == (1, 1)  # t3 only
+    assert fnb.execute("SELECT amount_cents FROM square_payment WHERE id='P1'").fetchone()[0] == 1000  # not refreshed

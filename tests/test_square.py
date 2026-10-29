@@ -655,3 +655,54 @@ def test_payments_to_link_show_softly_in_needs_attention(client, monkeypatch):  
     page = client.get("/").text
     assert "0</b> tournaments with missing payments" in page and "1 with payments to link" in page
     assert "🔗 4 payments ($20.00) to link to players" in page and "💳" not in page.split("Who is owed")[0]
+
+
+def test_an_entrant_sorted_out_by_hand_is_no_longer_missing(fnb):
+    # Alice paid $20, for herself and for Dan (#29); Bob and Cat paid their own
+    square.pull_tournament(fnb, FakeSquare([pay("P1", 2000, "fp-a"), pay("P2", 1000, "fp-b"),
+                                            pay("P3", 1000, "fp-c")]), "t1")
+    for pid, player in (("P1", "u1"), ("P2", "u2"), ("P3", "u3")):
+        square.link_payment(fnb, pid, player)
+    assert square.payment_issues(fnb)[0]["players"] == 1  # Dan unpaid (and Alice over)
+    with pytest.raises(RuleError):
+        square.resolve_entrant(fnb, "t1", "u4", "  ")  # a note is required
+    square.resolve_entrant(fnb, "t1", "u4", "paid by Alice")
+    square.resolve_entrant(fnb, "t1", "u1", "paid for Dan")
+    r = square.reconcile(fnb, "t1")
+    states = {p["id"]: (p["state"], p["note"]) for p in r["players"]}
+    assert states["u4"] == ("resolved", "paid by Alice") and states["u1"] == ("resolved", "paid for Dan")
+    assert states["u2"] == ("ok", None) and r["problems"] == 0
+    assert square.payment_issues(fnb) == []
+    square.unresolve_entrant(fnb, "t1", "u4")
+    assert square.payment_issues(fnb)[0]["players"] == 1
+
+
+def test_a_waived_entrant_leaves_no_shortfall_while_payments_wait_to_be_linked(fnb):
+    square.pull_tournament(fnb, FakeSquare([pay(f"P{i}", 1000, f"fp-{i}") for i in range(3)]), "t1")
+    [i] = square.payment_issues(fnb)  # $30 taken of $40, nothing linked: $10 short overall
+    assert (i["kind"], i["missing"]) == ("missing", 1000)
+    square.resolve_entrant(fnb, "t1", "u4", "free entry: TO")
+    [i] = square.payment_issues(fnb)
+    assert i["kind"] == "link"
+
+
+def test_sorting_out_an_entrant_on_the_page(client, monkeypatch):  # noqa: F811
+    monkeypatch.setattr(main, "GrpcParryClient", TwoNightsClient)
+    client.post("/series", data={"name": "FNB", "custom_slug": "fnb"})
+    client.post("/periods/1", data={"entry_fee": "5"})
+    client.post("/series/1/sync")
+    for _ in range(50):
+        if sync.status[1]["state"] != "running":
+            break
+        time.sleep(0.05)
+    oauth_env(monkeypatch, "sandbox")
+    monkeypatch.setattr(main, "HttpSquareClient", lambda: FakeSquare([pay("P1", 1500, "fp-a")]))
+    client.post("/tournaments/t1/square/pull")
+    client.post("/square-payments/P1/link", data={"player_id": "u1"})
+    assert 'action="/tournaments/t1/entrants/u2/resolve"' in client.get("/tournaments/t1").text
+    page = client.post("/tournaments/t1/entrants/u2/resolve", data={"note": ""}).text
+    assert "Say how it was sorted out" in page
+    page = client.post("/tournaments/t1/entrants/u2/resolve", data={"note": "paid by Alice"}).text
+    assert "sorted out</span> <span class=\"mut\">paid by Alice</span>" in page
+    page = client.post("/tournaments/t1/entrants/u2/resolve", data={"undo": "1"}).text
+    assert "paid by Alice" not in page

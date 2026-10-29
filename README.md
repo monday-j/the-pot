@@ -47,6 +47,8 @@ you've paid them and what you still owe. For your LAN, behind one shared passwor
   enter, then shows them as overpaid. Payments you've linked or unlinked by hand are never changed, and a card you've
   linked to more than one player (someone paying for a friend) isn't linked automatically any more. Auto-links are
   tagged "auto". Payments that aren't fees can be ignored, and a payment is only ever counted for one tournament.
+  When an entrant's fee was sorted out some other way (someone else paid for them, or it was waived), mark them
+  **Sorted out** in the "Who paid" table with a note saying how: they no longer count as unpaid or missing.
 - **Card fees**: each Square payment's processing fee (as Square reports it, tax adjustments included) is stored and
   shown, with gross, fees and net per tournament and per series. Square adds the fee a little after the payment, so
   a fresh payment shows "pending" until a later pull fills it in.

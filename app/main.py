@@ -700,6 +700,20 @@ def square_ignore(payment_id: str):
     return back(f"/tournaments/{p['tournament_id']}#square")
 
 
+@app.post("/tournaments/{tournament_id}/entrants/{player_id}/resolve")
+def resolve_entrant(tournament_id: str, player_id: str, note: str = Form(""), undo: str = Form("")):
+    try:
+        with db.session() as conn:
+            one(conn, "SELECT id FROM tournament WHERE id=?", tournament_id)
+            if undo:
+                square.unresolve_entrant(conn, tournament_id, player_id)
+            else:
+                square.resolve_entrant(conn, tournament_id, player_id, note)
+    except RuleError as e:
+        return back(f"/tournaments/{tournament_id}", str(e))
+    return back(f"/tournaments/{tournament_id}#paid")
+
+
 # --- rules -----------------------------------------------------------------
 
 @app.post("/series/{series_id}/rules")

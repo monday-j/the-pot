@@ -274,20 +274,26 @@ def reconcile(conn, tournament_id: str) -> dict:
     for p in counted:  # a card's payments link to its player even where they weren't entered (#22)
         if p["pid"]:
             tags.setdefault(p["pid"], p["gamer_tag"])
+    resolved = {r["player_id"]: r["note"] for r in conn.execute(
+        "SELECT player_id, note FROM entrant_override WHERE tournament_id=?", (tournament_id,))}
     players = []
     for pid in set(expected) | set(paid):
         want, got = expected.get(pid, 0), paid.get(pid, 0)
         state = "ok" if got == want else "unpaid" if got == 0 else "short" if got < want else "over"
         players.append({"id": pid, "tag": tags.get(pid, pid), "expected": want, "paid": got, "diff": got - want,
-                        "state": state})
+                        "state": state, "note": resolved.get(pid)})
     unlinked = [p for p in counted if not p["pid"]]
     if unlinked:  # card taps carry no names: until they're linked, "unpaid" may just mean "not matched yet"
         for r in players:
             if r["state"] == "unpaid":
                 r["state"] = "unmatched"
-    order = {"unpaid": 0, "short": 0, "over": 0, "unmatched": 1, "ok": 2}
+    for r in players:  # sorted out by hand, e.g. someone else paid for them (#29)
+        if r["state"] != "ok" and r["note"] is not None:
+            r["state"] = "resolved"
+    order = {"unpaid": 0, "short": 0, "over": 0, "unmatched": 1, "resolved": 2, "ok": 2}
     players.sort(key=lambda r: (order[r["state"]], r["tag"].lower()))
     expected_total, taken = sum(expected.values()), sum(p["amount_cents"] for p in counted)
+    waived = sum(max(-r["diff"], 0) for r in players if r["state"] == "resolved")  # not missing: it's sorted out
     fees = sum(p["fee_cents"] or 0 for p in counted + refunded)
     banked = sum(p["amount_cents"] - (p["fee_cents"] or 0) for p in counted + refunded if p["deposit_id"])
     return {"payments": payments, "players": players, "expected": expected_total, "taken": taken,
@@ -295,7 +301,7 @@ def reconcile(conn, tournament_id: str) -> dict:
             "difference": taken - expected_total, "attendees": len(expected), "count": len(counted),
             "unlinked": len(unlinked), "unlinked_cents": sum(p["amount_cents"] for p in unlinked),
             "unmatched": sum(1 for r in players if r["state"] == "unmatched"),
-            "shortfall": max(expected_total - taken, 0), "refunded": len(refunded),
+            "shortfall": max(expected_total - taken - waived, 0), "refunded": len(refunded),
             "refunded_fees": sum(p["fee_cents"] or 0 for p in refunded),
             "problems": sum(1 for r in players if r["state"] in ("unpaid", "short", "over"))}
 
@@ -325,6 +331,19 @@ def payment_issues(conn, series_id: int | None = None) -> list[dict]:
         elif r["unlinked"]:
             out.append({**row, "kind": "link"})
     return out
+
+
+def resolve_entrant(conn, tournament_id: str, player_id: str, note: str):
+    """Mark an entrant's payment as sorted out some other way (#29), with a note saying how."""
+    if not note.strip():
+        raise RuleError("Say how it was sorted out, e.g. who paid for them")
+    conn.execute("""INSERT INTO entrant_override (tournament_id, player_id, note, created_at) VALUES (?,?,?,?)
+                    ON CONFLICT(tournament_id, player_id) DO UPDATE SET note=excluded.note""",
+                 (tournament_id, player_id, note.strip(), sync.now()))
+
+
+def unresolve_entrant(conn, tournament_id: str, player_id: str):
+    conn.execute("DELETE FROM entrant_override WHERE tournament_id=? AND player_id=?", (tournament_id, player_id))
 
 
 def link_payment(conn, payment_id: str, player_id: str | None):

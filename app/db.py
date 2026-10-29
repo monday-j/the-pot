@@ -165,6 +165,15 @@ CREATE TABLE IF NOT EXISTS square_payment (
     receipt_url TEXT NOT NULL DEFAULT '',
     deposit_id INTEGER REFERENCES bank_deposit(id) ON DELETE SET NULL
 );
+-- An entrant whose payment is sorted out some other way (someone else paid for them, a waived fee), by hand (#29).
+-- player_id is the player they're reported under (after merges), as in square.reconcile.
+CREATE TABLE IF NOT EXISTS entrant_override (
+    tournament_id TEXT NOT NULL REFERENCES tournament(id) ON DELETE CASCADE,
+    player_id TEXT NOT NULL,
+    note TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (tournament_id, player_id)
+);
 CREATE INDEX IF NOT EXISTS idx_square_tournament ON square_payment(tournament_id);
 CREATE INDEX IF NOT EXISTS idx_square_fingerprint ON square_payment(fingerprint);
 CREATE INDEX IF NOT EXISTS idx_payout_player ON payout(player_id);

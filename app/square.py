@@ -272,6 +272,28 @@ def reconcile(conn, tournament_id: str) -> dict:
             "problems": sum(1 for r in players if r["state"] != "ok")}
 
 
+def payment_issues(conn, series_id: int | None = None) -> list[dict]:
+    """Tournaments where players haven't paid in full, from their Square reconciliation.
+
+    Only tournaments with Square payments pulled are checked: one never pulled (or a series not using Square) would
+    otherwise show everyone as unpaid. Excluded tournaments are skipped.
+    """
+    out = []
+    for t in conn.execute("""SELECT t.id, t.name, t.series_id, t.start_date FROM tournament t
+                             WHERE t.excluded=0 AND (? IS NULL OR t.series_id=?)
+                             AND EXISTS (SELECT 1 FROM square_payment WHERE tournament_id=t.id)
+                             ORDER BY t.start_date DESC""", (series_id, series_id)).fetchall():
+        r = reconcile(conn, t["id"])
+        missing = [p for p in r["players"] if p["state"] in ("unpaid", "short")]
+        if missing:
+            out.append({"tournament_id": t["id"], "tournament_name": t["name"], "series_id": t["series_id"],
+                        "players": len(missing), "missing": -sum(p["diff"] for p in missing),
+                        "unlinked": r["unlinked"],
+                        "unlinked_cents": sum(p["amount_cents"] for p in r["payments"]
+                                              if not p["ignored"] and not p["player_id"])})
+    return out
+
+
 def link_payment(conn, payment_id: str, player_id: str | None):
     if player_id and not conn.execute("SELECT 1 FROM player WHERE id=?", (player_id,)).fetchone():
         raise RuleError("Unknown player")

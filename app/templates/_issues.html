@@ -1,4 +1,9 @@
-{% import "_macros.html" as m %}{% if issues %}<h2>Needs attention <span class="n">· {{ issues|length }} event{{ "s" if issues|length != 1 }} with unfinalised placements, no payouts until fixed on parry.gg and re-synced</span></h2>
+{% import "_macros.html" as m %}{% if issues or payment_issues %}<h2>Needs attention <span class="n">·
+{%- if payment_issues %} {{ payment_issues|length }} tournament{{ "s" if payment_issues|length != 1 }} with missing payments{{ "," if issues }}{% endif %}
+{%- if issues %} {{ issues|length }} event{{ "s" if issues|length != 1 }} with unfinalised placements, no payouts until fixed on parry.gg and re-synced{% endif %}</span></h2>
 <table><thead><tr><th>Tournament</th><th>Event</th><th>Problem</th></tr></thead><tbody>
+{% for i in payment_issues %}<tr><td>{{ m.tournament(i.tournament_id, i.tournament_name) }}</td><td><span class="mut">·</span></td>
+<td><a href="/tournaments/{{ i.tournament_id }}#square">{{ m.payflag(i.players ~ " player" ~ ("s" if i.players != 1 else "") ~ " unpaid or short, " ~ (i.missing|money) ~ " missing") }}</a>
+{% if i.unlinked %} <span class="mut">{{ i.unlinked }} payment{{ "s" if i.unlinked != 1 }} ({{ i.unlinked_cents|money }}) not linked to a player: link {{ "them" if i.unlinked != 1 else "it" }} first</span>{% endif %}</td></tr>{% endfor %}
 {% for i in issues %}<tr><td>{{ m.tournament(i.tournament_id, i.tournament_name) }}</td><td>{{ m.event(i.id, i.name) }}</td><td>{{ m.flag(i.reason) }}</td></tr>{% endfor %}
 </tbody></table>{% endif %}

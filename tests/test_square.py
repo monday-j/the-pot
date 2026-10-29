@@ -463,3 +463,40 @@ def test_fee_pages(client, monkeypatch):  # noqa: F811
     assert ">pending<" in page and "$0.22" in page
     page = client.get("/series/FNB").text
     assert "$20.00</b> taken by card, <b>$0.22</b> fees" in page and "Card fees" in page
+
+
+def test_payment_issues_flag_tournaments_with_missing_payments(fnb):
+    assert square.payment_issues(fnb) == []  # nothing pulled yet: nobody is flagged as unpaid
+    square.pull_tournament(fnb, FakeSquare([pay("P1", 1000, "fp-a"), pay("P2", 600, "fp-b")]), "t1")
+    square.link_payment(fnb, "P1", "u1")
+    [i] = square.payment_issues(fnb)
+    assert (i["tournament_id"], i["players"], i["missing"], i["unlinked"], i["unlinked_cents"]) == ("t1", 3, 3000, 1, 600)
+    assert square.payment_issues(fnb, series_id=1) == [i] and square.payment_issues(fnb, series_id=99) == []
+    for pid, player in (("P2", "u2"),):
+        square.link_payment(fnb, pid, player)
+    assert square.payment_issues(fnb)[0]["players"] == 3  # Bob's $6 is still $4 short
+    fnb.execute("UPDATE tournament SET excluded=1 WHERE id='t1'")
+    assert square.payment_issues(fnb) == []
+
+
+def test_missing_payments_show_in_needs_attention(client, monkeypatch):  # noqa: F811
+    monkeypatch.setattr(main, "GrpcParryClient", TwoNightsClient)
+    client.post("/series", data={"name": "FNB", "custom_slug": "fnb"})
+    client.post("/periods/1", data={"entry_fee": "5"})
+    client.post("/series/1/sync")
+    for _ in range(50):
+        if sync.status[1]["state"] != "running":
+            break
+        time.sleep(0.05)
+    assert "with missing payments" not in client.get("/series/FNB").text.split("Tournaments")[0]
+    monkeypatch.setenv("SQUARE_API_KEY", "tok")
+    monkeypatch.setenv("SQUARE_ENV", "sandbox")
+    fake = FakeSquare([pay("P1", 500, "fp-a"), pay("P2", 500, "fp-b")])
+    monkeypatch.setattr(main, "HttpSquareClient", lambda: fake)
+    client.post("/tournaments/t1/square/pull")
+    client.post("/square-payments/P1/link", data={"player_id": "u1"})
+    for url in ("/", "/series/FNB"):
+        page = client.get(url).text
+        assert "1 tournament with missing payments" in page and "💳 3 players unpaid or short, $15.00 missing" in page
+        assert 'href="/tournaments/t1#square"' in page and "1 payment ($5.00) not linked to a player" in page
+    assert "1</b> tournament with missing payments" in client.get("/").text

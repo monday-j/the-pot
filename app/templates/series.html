@@ -18,7 +18,7 @@
 <div class="tw"><table class="sortable" id="tournaments"><thead><tr><th>Date</th><th>Tournament</th><th class="r">Attendees</th><th class="r">Events</th><th class="r">Pool</th><th class="r">Owed</th><th class="r">Paid</th><th class="r">Venue</th><th class="r" title="Square payments, net of refunds">By card</th><th class="r">Card fees</th><th>Flags</th><th></th></tr></thead><tbody>
 {% for t in tournaments %}<tr><td>{{ t.start_date }}</td><td>{{ m.tournament(t.id, t.name) }}{% if t.manual %} <span class="tag">manual</span>{% endif %}{% if t.excluded %} <span class="tag">excluded</span>{% endif %}</td>
 <td class="r">{{ t.num_attendees }}</td><td class="r">{{ t.events }}</td>{{ m.mtd(t.pool) }}{{ m.mtd(t.owed, "warn") }}{{ m.mtd(t.paid, "ok") }}{{ m.mtd(t.venue_amount, "st-" ~ t.venue_status if t.venue_status else "") }}{{ m.mtd(t.square_taken) }}{{ m.mtd(t.square_fees) }}
-<td>{% if t.flags %}<span class="flag">⚠ {{ t.flags }}</span>{% endif %}</td>
+<td>{% if t.flags %}<span class="flag">⚠ {{ t.flags }}</span>{% endif %}{% if t.unpaid %} <a href="/tournaments/{{ t.id }}#square" title="{{ t.unpaid.players }} unpaid or short, {{ t.unpaid.missing|money }} missing">{{ m.payflag(t.unpaid.players) }}</a>{% endif %}</td>
 <td><form class="inline" method="post" action="/tournaments/{{ t.id }}/exclude"><button class="sec">{{ "Restore" if t.excluded else "Exclude" }}</button></form></td></tr>
 {% else %}<tr><td colspan="12" class="mut">Nothing imported yet. Use "Import / sync now".</td></tr>{% endfor %}</tbody></table></div>
 <form method="post" action="/series/{{ s.id }}/tournaments" class="toolbar">

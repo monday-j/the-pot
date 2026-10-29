@@ -199,7 +199,9 @@ def dashboard(request: Request):
         venue_paid = conn.execute("SELECT COALESCE(SUM(amount_cents),0) FROM venue_payment WHERE status='paid'").fetchone()[0]
         issues = sync.event_issues(conn)
         by_tournament = flags_by(issues, "tournament_id")
-        recent = [{**dict(r), "flags": len(by_tournament.get(r["id"], []))} for r in conn.execute(
+        payment_issues = square.payment_issues(conn)
+        unpaid = {i["tournament_id"]: i for i in payment_issues}
+        recent = [{**dict(r), "flags": len(by_tournament.get(r["id"], [])), "unpaid": unpaid.get(r["id"])} for r in conn.execute(
             f"""SELECT t.*, s.name AS series_name, s.code AS series_code, {TOURNAMENT_SUMS} FROM tournament t
                 LEFT JOIN series s ON s.id=t.series_id ORDER BY t.start_date DESC LIMIT 10""")]
         owing = conn.execute("""SELECT p.id, p.gamer_tag, SUM(po.amount_cents) AS owed, COUNT(*) AS n,
@@ -208,7 +210,7 @@ def dashboard(request: Request):
                                 JOIN tournament t ON t.id=e.tournament_id WHERE po.status='owed'
                                 GROUP BY p.id ORDER BY owed DESC, p.gamer_tag COLLATE NOCASE""").fetchall()
     return render(request, "dashboard.html", owed=owed, paid=paid, recent=recent, owing=owing,
-                  issues=issues, venue_owed=venue_owed, venue_paid=venue_paid)
+                  issues=issues, payment_issues=payment_issues, venue_owed=venue_owed, venue_paid=venue_paid)
 
 
 @app.get("/series")
@@ -268,12 +270,14 @@ def series_page(request: Request, ref: str, period: int | None = None):
         shown = next((p for p in periods if p["id"] == period), current)
         issues = sync.event_issues(conn, series_id=series_id)
         by_tournament = flags_by(issues, "tournament_id")
+        payment_issues = square.payment_issues(conn, series_id)
+        unpaid = {i["tournament_id"]: i for i in payment_issues}
         tournaments = []
         for t in conn.execute(f"""SELECT t.*, {TOURNAMENT_SUMS} FROM tournament t WHERE t.series_id=?
                                   ORDER BY t.start_date DESC""", (series_id,)).fetchall():
             pools = [sync.event_pool(conn, e["id"]) for e in conn.execute(
                 "SELECT id FROM event WHERE tournament_id=?", (t["id"],))]
-            tournaments.append({**dict(t), "flags": len(by_tournament.get(t["id"], [])),
+            tournaments.append({**dict(t), "flags": len(by_tournament.get(t["id"], [])), "unpaid": unpaid.get(t["id"]),
                                 "pool": sum(i[1] for i in pools if i)})
         games = conn.execute(f"""SELECT e.game_name, COUNT(*) AS events, SUM(e.entrant_count) AS entrants,
                                         COUNT(DISTINCT t.id) AS tournaments, SUM(owed) AS owed, SUM(paid) AS paid
@@ -296,6 +300,7 @@ def series_page(request: Request, ref: str, period: int | None = None):
         venues = venue_options(conn)
     return render(request, "series.html", s=s, tournaments=tournaments, games=games, game_rules=game_rules,
                   rules=rules, events=events, sync_status=sync.status.get(series_id), issues=issues,
+                  payment_issues=payment_issues,
                   venues=venues, periods=periods, current=current, shown=shown,
                   square_status=square.status.get(series_id), square_setup=square_setup(),
                   auto_pull_hours=config.square_auto_pull_hours())

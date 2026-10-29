@@ -5,7 +5,8 @@
 <span class="mut">{{ owed|money }} to players + {{ venue_owed|money }} to venues</span></div>
 <div class="summary"><span><b class="warn">{{ owed|money }}</b> owed to {{ owing|length }} player{{ "s" if owing|length != 1 }}</span>
 <span><b class="ok">{{ paid|money }}</b> paid</span>
-<span><b class="warn">{{ venue_owed|money }}</b> <a href="/venue?status=owed">owed to venues</a></span><span><b class="ok">{{ venue_paid|money }}</b> paid to venues</span><span><b class="{{ 'bad' if issues }}">{{ issues|length }}</b> flagged event{{ "s" if issues|length != 1 }}</span></div>
+<span><b class="warn">{{ venue_owed|money }}</b> <a href="/venue?status=owed">owed to venues</a></span><span><b class="ok">{{ venue_paid|money }}</b> paid to venues</span><span><b class="{{ 'bad' if issues }}">{{ issues|length }}</b> flagged event{{ "s" if issues|length != 1 }}</span>
+<span><b class="{{ 'warn' if payment_issues }}">{{ payment_issues|length }}</b> tournament{{ "s" if payment_issues|length != 1 }} with missing payments</span></div>
 {% include "_issues.html" %}
 <h2>Who is owed <span class="n">· {{ owing|length }}</span></h2>
 <table class="sortable"><thead><tr><th>Player</th><th class="r">Payouts</th><th>Oldest</th><th class="r">Owed</th></tr></thead><tbody>
@@ -15,6 +16,6 @@
 <table class="sortable"><thead><tr><th>Date</th><th>Tournament</th><th>Series</th><th class="r">Attendees</th><th class="r">Events</th><th class="r">Owed</th><th class="r">Paid</th><th>Flags</th></tr></thead><tbody>
 {% for t in recent %}<tr><td>{{ t.start_date }}</td><td>{{ m.tournament(t.id, t.name) }}</td><td>{{ m.series(t.series_id, t.series_name, t.series_code) }}</td>
 <td class="r">{{ t.num_attendees }}</td><td class="r">{{ t.events }}</td>{{ m.mtd(t.owed, "warn") }}{{ m.mtd(t.paid, "ok") }}
-<td>{% if t.flags %}<span class="flag">⚠ {{ t.flags }}</span>{% endif %}</td></tr>
+<td>{% if t.flags %}<span class="flag">⚠ {{ t.flags }}</span>{% endif %}{% if t.unpaid %} <a href="/tournaments/{{ t.id }}#square" title="{{ t.unpaid.players }} unpaid or short, {{ t.unpaid.missing|money }} missing">{{ m.payflag(t.unpaid.players) }}</a>{% endif %}</td></tr>
 {% else %}<tr><td colspan="8" class="mut">Nothing imported yet.</td></tr>{% endfor %}</tbody></table>
 {% endblock %}

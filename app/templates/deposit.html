@@ -1,0 +1,28 @@
+{% extends "base.html" %}{% import "_macros.html" as m %}
+{% block crumbs %}<div class="crumbs"><a href="/bank">Bank</a><span>{{ x.d.deposited_on }}</span></div>{% endblock %}
+{% block body %}
+<h1>Deposit {{ x.d.deposited_on }}{% if x.d.reference %} <span class="tag">{{ x.d.reference }}</span>{% endif %}</h1>
+<div class="summary"><span><b>{{ x.d.amount_cents|money }}</b> deposited</span><span><b>{{ x.matched|money }}</b> net of {{ x.payments|length }} matched payments</span>
+<span><b class="{{ 'ok' if x.difference == 0 else 'bad' }}">{{ x.difference|money }}</b> {{ "adds up" if x.difference == 0 else "difference" }}</span>
+{% if x.fees_pending %}<span class="warn">{{ x.fees_pending }} matched payment{{ "s" if x.fees_pending != 1 }} without a Square fee yet: pull again</span>{% endif %}</div>
+<h2>Matched payments <span class="n">· {{ x.payments|length }}</span></h2>
+<table class="sortable"><thead><tr><th>Taken</th><th>Tournament</th><th>Player</th><th class="r">Amount</th><th class="r">Fee</th><th class="r">Net</th><th></th></tr></thead><tbody>
+{% for p in x.payments %}<tr{% if p.ignored %} class="mut"{% endif %}><td>{{ p.created_at|localtime }}</td><td>{{ m.tournament(p.tournament_id, p.tname) }}</td><td>{% if p.player_id %}{{ m.player(p.player_id, p.gamer_tag) }}{% else %}<span class="mut">{{ p.note or "·" }}</span>{% endif %}</td>
+{{ m.mtd(p.amount_cents) }}<td class="r">{% if p.fee_cents is none %}<span class="mut">pending</span>{% else %}{{ p.fee_cents|money }}{% endif %}</td>{{ m.mtd(p.net) }}
+<td><form class="inline" method="post" action="/bank/{{ x.d.id }}/payments/{{ p.id|urlq }}/remove"><button class="sec">Remove</button></form></td></tr>
+{% else %}<tr><td colspan="7" class="mut">No payments matched yet: tick them below.</td></tr>{% endfor %}</tbody></table>
+<h2>Add payments <span class="n">· unbanked, from the {{ lookback }} days before</span></h2>
+{% if options %}<form method="post" action="/bank/{{ x.d.id }}/payments">
+<table class="sortable"><thead><tr><th></th><th>Taken</th><th>Tournament</th><th>Player</th><th class="r">Amount</th><th class="r">Fee</th><th class="r">Net</th></tr></thead><tbody>
+{% for p in options %}<tr{% if p.ignored %} class="mut"{% endif %}><td><input type="checkbox" name="payment_id" value="{{ p.id }}" {{ "checked" if p.suggested }}></td><td>{{ p.created_at|localtime }}</td><td>{{ m.tournament(p.tournament_id, p.tname) }}</td>
+<td>{% if p.player_id %}{{ m.player(p.player_id, p.gamer_tag) }}{% else %}<span class="mut">{{ p.note or "·" }}</span>{% endif %}</td>{{ m.mtd(p.amount_cents) }}<td class="r">{% if p.fee_cents is none %}<span class="mut">pending</span>{% else %}{{ p.fee_cents|money }}{% endif %}</td>{{ m.mtd(p.net) }}</tr>{% endfor %}</tbody></table>
+<div class="toolbar"><button>Add ticked payments</button><span class="mut">Ticked: whole days just before this deposit that fit in it.</span></div></form>
+{% else %}<p class="mut">No unbanked Square payments from the {{ lookback }} days before this deposit.</p>{% endif %}
+<h2>Edit</h2>
+<form method="post" action="/bank/{{ x.d.id }}" class="toolbar">
+<label>Deposited on<input type="date" name="deposited_on" value="{{ x.d.deposited_on }}" required></label>
+<label>Amount $<input name="amount" value="{{ '%.2f' % (x.d.amount_cents / 100) }}" size="9" required></label>
+<label>Reference<input name="reference" value="{{ x.d.reference }}" size="24"></label>
+<label>Note<input name="note" value="{{ x.d.note }}" size="24"></label><button class="sec">Save</button></form>
+<form method="post" action="/bank/{{ x.d.id }}/delete" class="toolbar"><button class="sec">Delete deposit</button><span class="mut">Its payments go back to "not in the bank yet".</span></form>
+{% endblock %}

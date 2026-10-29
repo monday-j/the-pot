@@ -11,7 +11,7 @@ from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from . import codes, config, db, square, sync
+from . import bank, codes, config, db, square, sync
 from .parry_client import GrpcParryClient
 from .square_client import HttpSquareClient, SquareConfigError, environment as square_environment
 from .payouts import (Rule, RuleError, VenueCut, compute_payouts, parse_splits, pool_breakdown, splits_from_json,
@@ -493,6 +493,76 @@ def series_square_pull(series_id: int):
     if not square.start_series_pull(series_id, lambda: HttpSquareClient()):
         return back(f"/series/{series_id}", "A Square pull is already running; try again when it finishes")
     return back(f"/series/{series_id}")
+
+
+# --- bank reconciliation ---------------------------------------------------
+
+@app.get("/bank")
+def bank_page(request: Request):
+    with db.session() as conn:
+        deposits = [bank.summary(conn, d) for d in conn.execute(
+            "SELECT * FROM bank_deposit ORDER BY deposited_on DESC, id DESC").fetchall()]
+        waiting = bank.unbanked(conn)
+    return render(request, "bank.html", deposits=deposits, waiting=waiting, overdue_days=bank.OVERDUE_DAYS,
+                  today=datetime.now(ZoneInfo(config.TIMEZONE)).date().isoformat())
+
+
+def _deposit_form(conn, deposit_id, deposited_on, amount, reference, note) -> int:
+    return bank.save_deposit(conn, deposit_id, parse_date(deposited_on), dollars_to_cents(amount), reference, note)
+
+
+@app.post("/bank")
+def add_deposit(deposited_on: str = Form(...), amount: str = Form(...), reference: str = Form(""), note: str = Form("")):
+    try:
+        with db.session() as conn:
+            deposit_id = _deposit_form(conn, None, deposited_on, amount, reference, note)
+    except RuleError as e:
+        return back("/bank", str(e))
+    return back(f"/bank/{deposit_id}")
+
+
+@app.get("/bank/{deposit_id}")
+def deposit_page(request: Request, deposit_id: int):
+    with db.session() as conn:
+        d = one(conn, "SELECT * FROM bank_deposit WHERE id=?", deposit_id)
+        info, options = bank.summary(conn, d), bank.candidates(conn, d)
+    return render(request, "deposit.html", x=info, options=options, lookback=bank.LOOKBACK_DAYS)
+
+
+@app.post("/bank/{deposit_id}")
+def update_deposit(deposit_id: int, deposited_on: str = Form(...), amount: str = Form(...), reference: str = Form(""),
+                   note: str = Form("")):
+    try:
+        with db.session() as conn:
+            one(conn, "SELECT id FROM bank_deposit WHERE id=?", deposit_id)
+            _deposit_form(conn, deposit_id, deposited_on, amount, reference, note)
+    except RuleError as e:
+        return back(f"/bank/{deposit_id}", str(e))
+    return back(f"/bank/{deposit_id}")
+
+
+@app.post("/bank/{deposit_id}/delete")
+def delete_deposit(deposit_id: int):
+    with db.session() as conn:
+        one(conn, "SELECT id FROM bank_deposit WHERE id=?", deposit_id)
+        conn.execute("DELETE FROM bank_deposit WHERE id=?", (deposit_id,))  # its payments become unbanked again
+    return back("/bank")
+
+
+@app.post("/bank/{deposit_id}/payments")
+def match_payments(deposit_id: int, payment_id: list[str] = Form([])):
+    with db.session() as conn:
+        one(conn, "SELECT id FROM bank_deposit WHERE id=?", deposit_id)
+        bank.match(conn, deposit_id, payment_id)
+    return back(f"/bank/{deposit_id}")
+
+
+@app.post("/bank/{deposit_id}/payments/{payment_id}/remove")
+def unmatch_payment(deposit_id: int, payment_id: str):
+    with db.session() as conn:
+        one(conn, "SELECT id FROM bank_deposit WHERE id=?", deposit_id)
+        bank.unmatch(conn, deposit_id, payment_id)
+    return back(f"/bank/{deposit_id}")
 
 
 @app.post("/square-payments/{payment_id}/link")

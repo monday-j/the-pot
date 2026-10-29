@@ -1,0 +1,22 @@
+{% extends "base.html" %}{% import "_macros.html" as m %}{% block body %}
+<h1>Bank</h1>
+<div class="summary"><span><b>{{ deposits|length }}</b> deposits</span><span><b>{{ deposits|sum(attribute="d.amount_cents")|money }}</b> deposited</span>
+<span><b class="{{ 'bad' if deposits|selectattr('difference')|list }}">{{ deposits|selectattr("difference")|list|length }}</b> that don't add up</span>
+<span><b class="warn">{{ waiting|sum(attribute="net")|money }}</b> net from Square not in the bank yet</span></div>
+<form method="post" action="/bank" class="toolbar">
+<label>Deposited on<input type="date" name="deposited_on" value="{{ today }}" required></label>
+<label>Amount $<input name="amount" size="9" required></label>
+<label>Reference (as on the statement)<input name="reference" size="24"></label>
+<label>Note<input name="note" size="24"></label><button>Add deposit</button></form>
+<h2>Deposits <span class="n">· {{ deposits|length }}</span></h2>
+<table class="sortable"><thead><tr><th>Date</th><th>Reference</th><th class="r">Deposited</th><th class="r">Payments</th><th class="r">Matched net</th><th class="r">Difference</th><th>Note</th></tr></thead><tbody>
+{% for x in deposits %}<tr><td><a href="/bank/{{ x.d.id }}">{{ x.d.deposited_on }}</a></td><td>{{ x.d.reference }}</td>{{ m.mtd(x.d.amount_cents) }}<td class="r">{{ x.payments|length }}</td>{{ m.mtd(x.matched) }}
+<td class="r {{ 'ok' if x.difference == 0 else 'bad' }}" data-v="{{ x.difference }}">{{ x.difference|money }}{% if x.fees_pending %} <span class="warn" title="Some matched payments have no Square fee yet">fees pending</span>{% endif %}</td><td class="mut">{{ x.d.note }}</td></tr>
+{% else %}<tr><td colspan="7" class="mut">No deposits recorded yet. Add one from your bank statement above.</td></tr>{% endfor %}</tbody></table>
+<h2>Not in the bank yet <span class="n">· {{ waiting|sum(attribute="count") }} payments</span></h2>
+<table class="sortable"><thead><tr><th>Day taken</th><th>Tournaments</th><th class="r">Payments</th><th class="r">Gross</th><th class="r">Fees</th><th class="r">Net</th><th></th></tr></thead><tbody>
+{% for d in waiting %}<tr><td>{{ d.day }}</td><td>{% for tid, name in d.tournaments %}{{ m.tournament(tid, name) }}{{ ", " if not loop.last }}{% endfor %}</td><td class="r">{{ d.count }}</td>{{ m.mtd(d.gross) }}{{ m.mtd(d.fees) }}{{ m.mtd(d.net) }}
+<td>{% if d.overdue %}<span class="bad">over {{ overdue_days }} days</span>{% endif %}{% if d.pending %} <span class="warn">{{ d.pending }} fee{{ "s" if d.pending != 1 }} pending</span>{% endif %}</td></tr>
+{% else %}<tr><td colspan="7" class="mut">Every Square payment is matched to a deposit.</td></tr>{% endfor %}</tbody></table>
+<p class="help">Square pays takings out net of its fees, usually one deposit per business day. Record each deposit as it appears on your bank statement, then tick the payments it covers. Every pulled Square payment counts here, ignored ones included, since Square deposits those too. Payments that were never pulled (outside tournament times) aren't listed, so a deposit that includes them won't add up.</p>
+{% endblock %}

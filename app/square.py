@@ -236,8 +236,9 @@ def reconcile(conn, tournament_id: str) -> dict:
     players.sort(key=lambda r: (r["state"] == "ok", r["tag"].lower()))
     expected_total, taken = sum(expected.values()), sum(p["amount_cents"] for p in counted)
     fees = sum(p["fee_cents"] or 0 for p in counted)
+    banked = sum(p["amount_cents"] - (p["fee_cents"] or 0) for p in counted if p["deposit_id"])
     return {"payments": payments, "players": players, "expected": expected_total, "taken": taken,
-            "fees": fees, "net": taken - fees, "fees_pending": sum(1 for p in counted if p["fee_cents"] is None),
+            "fees": fees, "net": taken - fees, "banked": banked, "fees_pending": sum(1 for p in counted if p["fee_cents"] is None),
             "difference": taken - expected_total, "attendees": len(expected), "count": len(counted),
             "unlinked": sum(1 for p in counted if not p["player_id"]),
             "problems": sum(1 for r in players if r["state"] != "ok")}

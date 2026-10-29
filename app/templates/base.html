@@ -11,7 +11,8 @@
 <a href="/games" class="{{ 'on' if path.startswith('/games') }}">Games</a>
 <a href="/players" class="{{ 'on' if path.startswith('/players') }}">Players</a>
 <a href="/payouts" class="{{ 'on' if path.startswith('/payouts') }}">Payouts</a>
-<a href="/venues" class="{{ 'on' if path.startswith('/venue') }}">Venues</a></nav>
+<a href="/venues" class="{{ 'on' if path.startswith('/venue') }}">Venues</a>
+<a href="/bank" class="{{ 'on' if path.startswith('/bank') }}">Bank</a></nav>
 <main>
 {% block crumbs %}{% endblock %}
 {% if error %}<div class="strip err">{{ error }}</div>{% endif %}

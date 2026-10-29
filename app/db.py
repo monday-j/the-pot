@@ -119,6 +119,14 @@ CREATE TABLE IF NOT EXISTS venue_payment (
     paid_at TEXT,
     note TEXT NOT NULL DEFAULT ''
 );
+-- Bank deposits recorded by hand from the bank statement; Square payments are matched to the deposit that paid them out.
+CREATE TABLE IF NOT EXISTS bank_deposit (
+    id INTEGER PRIMARY KEY,
+    deposited_on TEXT NOT NULL,
+    amount_cents INTEGER NOT NULL,
+    reference TEXT NOT NULL DEFAULT '',
+    note TEXT NOT NULL DEFAULT ''
+);
 -- Payments pulled from Square for a tournament. player_id is set by hand ('manual') or from a card seen before ('auto').
 CREATE TABLE IF NOT EXISTS square_payment (
     id TEXT PRIMARY KEY,
@@ -135,7 +143,8 @@ CREATE TABLE IF NOT EXISTS square_payment (
     fingerprint TEXT NOT NULL DEFAULT '',
     cardholder_name TEXT NOT NULL DEFAULT '',
     note TEXT NOT NULL DEFAULT '',
-    receipt_url TEXT NOT NULL DEFAULT ''
+    receipt_url TEXT NOT NULL DEFAULT '',
+    deposit_id INTEGER REFERENCES bank_deposit(id) ON DELETE SET NULL
 );
 CREATE INDEX IF NOT EXISTS idx_square_tournament ON square_payment(tournament_id);
 CREATE INDEX IF NOT EXISTS idx_square_fingerprint ON square_payment(fingerprint);
@@ -208,6 +217,7 @@ ADDED_COLUMNS = {
     },
     "square_payment": {
         "fee_cents": "INTEGER",
+        "deposit_id": "INTEGER REFERENCES bank_deposit(id) ON DELETE SET NULL",
     },
     "venue_payment": {
         "venue_id": "INTEGER REFERENCES venue(id) ON DELETE SET NULL",

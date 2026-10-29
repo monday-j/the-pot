@@ -37,7 +37,8 @@
 <div class="summary"><span><b>{{ recon.expected|money }}</b> expected from {{ recon.attendees }} attendees</span>
 <span><b>{{ recon.taken|money }}</b> taken in {{ recon.count }} payments</span>
 {% if recon.payments %}<span><b>{{ recon.fees|money }}</b> card fees{% if recon.fees_pending %} <span class="warn" title="Square adds its fee a little after each payment; pull again later">({{ recon.fees_pending }} pending)</span>{% endif %}</span>
-<span><b>{{ recon.net|money }}</b> net</span>{% endif %}
+<span><b>{{ recon.net|money }}</b> net</span>
+<span><b class="{{ 'ok' if recon.banked == recon.net else 'warn' }}">{{ recon.banked|money }}</b> of it <a href="/bank">in the bank</a></span>{% endif %}
 {% if recon.payments %}<span><b class="{{ 'ok' if recon.difference == 0 else 'bad' }}">{{ recon.difference|money }}</b> difference</span>
 <span><b class="{{ 'warn' if recon.unlinked }}">{{ recon.unlinked }}</b> not linked to a player</span>
 <span><b class="{{ 'bad' if recon.problems }}">{{ recon.problems }}</b> players unpaid, short or over</span>{% endif %}</div>

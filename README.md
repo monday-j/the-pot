@@ -50,6 +50,11 @@ you've paid them and what you still owe. Local-only (no auth), SQLite, run as a 
 - **Card fees**: each Square payment's processing fee (as Square reports it, tax adjustments included) is stored and
   shown, with gross, fees and net per tournament and per series. Square adds the fee a little after the payment, so
   a fresh payment shows "pending" until a later pull fills it in.
+- **Bank** (manual reconciliation): Square pays takings out net of fees, usually one deposit per business day. Record
+  each deposit from your bank statement on the Bank page and tick the Square payments it covers (it suggests whole days
+  just before the deposit that fit). Deposits that don't add up, and Square payments still not in the bank after 3 days,
+  are flagged, and tournament pages show how much of their net is banked. Ignored Square payments count here too,
+  since Square deposits them. Cash and other accounts aren't covered yet.
 - **Pulling a whole series**: "Pull Square payments (all tournaments)" on the series page pulls every tournament in the
   background with a single Square query per location (spanning all their dates, then filing each payment under the
   night it belongs to), so a season costs a few requests rather than one per night. Set `SQUARE_AUTO_PULL_HOURS`

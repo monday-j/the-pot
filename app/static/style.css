@@ -6,7 +6,8 @@
 body{margin:0;background:var(--bg);color:var(--fg);font:13.5px/1.4 system-ui,-apple-system,"Segoe UI",sans-serif}
 a{color:var(--acc);text-decoration:none}a:hover{text-decoration:underline}
 nav{display:flex;gap:1.1rem;align-items:baseline;padding:.45rem 1rem;background:var(--bar);color:var(--barfg)}
-nav a{color:var(--barfg);opacity:.75}nav a.on,nav a:hover{opacity:1;text-decoration:none}nav .brand{font-weight:700;opacity:1;margin-right:.6rem}
+nav a{color:var(--barfg);opacity:.75}nav a.on,nav a:hover{opacity:1;text-decoration:none}nav .brand{font-weight:700;opacity:1;margin-right:.6rem;display:inline-flex;align-items:center;gap:.35rem}
+nav .brand img{width:1.4em;height:1.4em;display:block}
 nav a.on{border-bottom:2px solid var(--barfg)}
 main{max-width:1500px;margin:0 auto;padding:.7rem 1rem 3rem}
 h1{font-size:1.25rem;margin:.1rem 0 .3rem}

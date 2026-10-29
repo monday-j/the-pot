@@ -353,3 +353,4 @@ def test_favicon(client):
     assert r.status_code == 200 and "<svg" in r.text
     page = client.get("/").text
     assert 'href="/static/favicon.svg"' in page and 'href="/favicon.ico"' in page
+    assert '<a class="brand" href="/"><img src="/static/favicon.svg" alt=""' in page  # the icon is part of the home link

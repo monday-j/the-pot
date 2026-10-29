@@ -31,7 +31,7 @@ table.kv th{position:static;text-align:left;width:16rem;text-transform:none;lett
 table.kv{max-width:60rem}
 td.num{text-align:right}
 .st-owed{color:var(--warn)}.st-paid{color:var(--ok)}
-.flag{color:var(--bad);font-weight:600}.flag.pay{color:var(--warn)}.tag{font-size:.72rem;padding:0 .35rem;border:1px solid var(--line);color:var(--mut)}
+.flag{color:var(--bad);font-weight:600}.flag.pay{color:var(--warn)}.flag.link{color:var(--mut);font-weight:400}.tag{font-size:.72rem;padding:0 .35rem;border:1px solid var(--line);color:var(--mut)}
 .strip{padding:.4rem .7rem;margin:.5rem 0;border-left:4px solid var(--warn);background:var(--warnbg)}
 .strip.err{border-left-color:var(--bad);background:var(--badbg);color:var(--bad)}
 .strip ul{margin:.25rem 0 0;padding-left:1.1rem}

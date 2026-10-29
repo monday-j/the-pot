@@ -41,7 +41,8 @@
 <span><b class="{{ 'ok' if recon.banked == recon.net else 'warn' }}">{{ recon.banked|money }}</b> of it <a href="/bank">in the bank</a></span>{% endif %}
 {% if recon.payments %}<span><b class="{{ 'ok' if recon.difference == 0 else 'bad' }}">{{ recon.difference|money }}</b> difference</span>
 <span><b class="{{ 'warn' if recon.unlinked }}">{{ recon.unlinked }}</b> not linked to a player</span>
-<span><b class="{{ 'bad' if recon.problems }}">{{ recon.problems }}</b> players unpaid, short or over</span>{% endif %}</div>
+<span><b class="{{ 'bad' if recon.problems }}">{{ recon.problems }}</b> players unpaid, short or over</span>
+{% if recon.unmatched %}<span><b class="warn">{{ recon.unmatched }}</b> player{{ "s" if recon.unmatched != 1 }} not matched to a payment yet ({{ recon.unlinked }} payment{{ "s" if recon.unlinked != 1 }} to link)</span>{% endif %}{% endif %}</div>
 {% set sq = square_setup %}<form method="post" action="/tournaments/{{ t.id }}/square/pull" class="toolbar"><button class="sec" {{ "disabled" if not sq.env }}>Pull payments from Square</button>
 {% if not sq.token %}<span class="mut">Give the app read-only Square access (see the README) to pull payments.</span>{% elif sq.error %}<span class="bad">{{ sq.error }}</span>{% else %}<span class="tag" title="SQUARE_ENV">Square: {{ sq.env }}</span> <span class="mut">Payments on {{ t.start_date }} (until 6am the next day){% if venue and venue.info.venue_id %} at the venue's Square location{% endif %}.</span>{% endif %}</form>
 {% if recon.payments %}
@@ -56,7 +57,7 @@
 <h3 class="help">Who paid</h3>
 <table class="sortable"><thead><tr><th>Player</th><th class="r">Expected</th><th class="r">Paid</th><th class="r">Difference</th><th>Status</th></tr></thead><tbody>
 {% for r in recon.players %}<tr><td>{{ m.player(r.id, r.tag) }}</td>{{ m.mtd(r.expected) }}{{ m.mtd(r.paid) }}<td class="r {{ 'ok' if r.diff == 0 else 'bad' }}" data-v="{{ r.diff }}">{{ r.diff|money }}</td>
-<td><span class="{{ 'ok' if r.state == 'ok' else 'bad' }}">{{ {"ok": "paid", "unpaid": "unpaid", "short": "short", "over": "overpaid"}[r.state] }}</span></td></tr>{% endfor %}</tbody></table>
+<td><span class="{{ 'ok' if r.state == 'ok' else 'warn' if r.state == 'unmatched' else 'bad' }}">{{ {"ok": "paid", "unpaid": "unpaid", "short": "short", "over": "overpaid", "unmatched": "not matched yet"}[r.state] }}</span></td></tr>{% endfor %}</tbody></table>
 <p class="help">Expected = entry fee + the bracket fee of each event entered. Link each payment to the player who made it; a card you've linked to one player is linked to them automatically next time (not a second payment from it the same night). Ignore payments that aren't tournament fees.</p>
 {% endif %}
 <h2>Attendees <span class="n">· {{ attendees|length }}</span></h2>

@@ -263,23 +263,33 @@ def reconcile(conn, tournament_id: str) -> dict:
         state = "ok" if got == want else "unpaid" if got == 0 else "short" if got < want else "over"
         players.append({"id": pid, "tag": tags.get(pid, pid), "expected": want, "paid": got, "diff": got - want,
                         "state": state})
-    players.sort(key=lambda r: (r["state"] == "ok", r["tag"].lower()))
+    unlinked = [p for p in counted if not p["pid"]]
+    if unlinked:  # card taps carry no names: until they're linked, "unpaid" may just mean "not matched yet"
+        for r in players:
+            if r["state"] == "unpaid":
+                r["state"] = "unmatched"
+    order = {"unpaid": 0, "short": 0, "over": 0, "unmatched": 1, "ok": 2}
+    players.sort(key=lambda r: (order[r["state"]], r["tag"].lower()))
     expected_total, taken = sum(expected.values()), sum(p["amount_cents"] for p in counted)
     fees = sum(p["fee_cents"] or 0 for p in counted + refunded)
     banked = sum(p["amount_cents"] - (p["fee_cents"] or 0) for p in counted + refunded if p["deposit_id"])
     return {"payments": payments, "players": players, "expected": expected_total, "taken": taken,
             "fees": fees, "net": taken - fees, "banked": banked, "fees_pending": sum(1 for p in counted if p["fee_cents"] is None),
             "difference": taken - expected_total, "attendees": len(expected), "count": len(counted),
-            "unlinked": sum(1 for p in counted if not p["player_id"]), "refunded": len(refunded),
+            "unlinked": len(unlinked), "unlinked_cents": sum(p["amount_cents"] for p in unlinked),
+            "unmatched": sum(1 for r in players if r["state"] == "unmatched"),
+            "shortfall": max(expected_total - taken, 0), "refunded": len(refunded),
             "refunded_fees": sum(p["fee_cents"] or 0 for p in refunded),
-            "problems": sum(1 for r in players if r["state"] != "ok")}
+            "problems": sum(1 for r in players if r["state"] in ("unpaid", "short", "over"))}
 
 
 def payment_issues(conn, series_id: int | None = None) -> list[dict]:
-    """Tournaments where players haven't paid in full, from their Square reconciliation.
+    """Tournaments whose Square reconciliation needs attention, each with a `kind`:
 
-    Only tournaments with Square payments pulled are checked: one never pulled (or a series not using Square) would
-    otherwise show everyone as unpaid. Excluded tournaments are skipped.
+    "missing": linked players are unpaid or short (players, missing), or, with payments still to link, less was taken
+    than expected overall (players 0, missing = the shortfall). "link": nothing is known to be missing, but payments
+    still need linking to players. Only tournaments with Square payments pulled are checked: one never pulled (or a
+    series not using Square) would otherwise show everyone as unpaid. Excluded tournaments are skipped.
     """
     out = []
     for t in conn.execute("""SELECT t.id, t.name, t.series_id, t.start_date FROM tournament t
@@ -288,12 +298,15 @@ def payment_issues(conn, series_id: int | None = None) -> list[dict]:
                              ORDER BY t.start_date DESC""", (series_id, series_id)).fetchall():
         r = reconcile(conn, t["id"])
         missing = [p for p in r["players"] if p["state"] in ("unpaid", "short")]
+        row = {"tournament_id": t["id"], "tournament_name": t["name"], "series_id": t["series_id"],
+               "players": len(missing), "missing": -sum(p["diff"] for p in missing),
+               "unlinked": r["unlinked"], "unlinked_cents": r["unlinked_cents"]}
         if missing:
-            out.append({"tournament_id": t["id"], "tournament_name": t["name"], "series_id": t["series_id"],
-                        "players": len(missing), "missing": -sum(p["diff"] for p in missing),
-                        "unlinked": r["unlinked"],
-                        "unlinked_cents": sum(p["amount_cents"] for p in r["payments"]
-                                              if not p["ignored"] and not p["player_id"] and p["amount_cents"] > 0)})
+            out.append({**row, "kind": "missing"})
+        elif r["unmatched"] and r["shortfall"]:
+            out.append({**row, "kind": "missing", "missing": r["shortfall"]})
+        elif r["unlinked"]:
+            out.append({**row, "kind": "link"})
     return out
 
 

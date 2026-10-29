@@ -107,7 +107,12 @@ def test_reconcile_finds_unpaid_short_over_and_unlinked(fnb):
     r = square.reconcile(fnb, "t1")
     assert (r["expected"], r["taken"], r["difference"], r["count"], r["unlinked"]) == (4000, 4100, 100, 4, 1)
     states = {p["id"]: (p["state"], p["diff"]) for p in r["players"]}
-    assert states == {"u1": ("ok", 0), "u2": ("short", -400), "u3": ("over", 500), "u4": ("unpaid", -1000)}
+    # P4 isn't linked yet, so Dan, with nothing linked, may simply not be matched yet rather than unpaid (#15)
+    assert states == {"u1": ("ok", 0), "u2": ("short", -400), "u3": ("over", 500), "u4": ("unmatched", -1000)}
+    assert (r["problems"], r["unmatched"], r["shortfall"]) == (2, 1, 0)
+    square.link_payment(fnb, "P4", "u1")  # everything linked: now Dan really is unpaid (and Alice over)
+    states = {p["id"]: p["state"] for p in square.reconcile(fnb, "t1")["players"]}
+    assert states["u4"] == "unpaid" and states["u1"] == "over"
     with pytest.raises(RuleError):
         square.link_payment(fnb, "P4", "nobody")
 
@@ -498,12 +503,12 @@ def test_payment_issues_flag_tournaments_with_missing_payments(fnb):
     assert square.payment_issues(fnb) == []  # nothing pulled yet: nobody is flagged as unpaid
     square.pull_tournament(fnb, FakeSquare([pay("P1", 1000, "fp-a"), pay("P2", 600, "fp-b")]), "t1")
     square.link_payment(fnb, "P1", "u1")
-    [i] = square.payment_issues(fnb)
-    assert (i["tournament_id"], i["players"], i["missing"], i["unlinked"], i["unlinked_cents"]) == ("t1", 3, 3000, 1, 600)
+    [i] = square.payment_issues(fnb)  # P2 is unlinked: nobody is known to be unpaid, but $24 short overall
+    assert (i["kind"], i["players"], i["missing"], i["unlinked"], i["unlinked_cents"]) == ("missing", 0, 2400, 1, 600)
     assert square.payment_issues(fnb, series_id=1) == [i] and square.payment_issues(fnb, series_id=99) == []
     for pid, player in (("P2", "u2"),):
         square.link_payment(fnb, pid, player)
-    assert square.payment_issues(fnb)[0]["players"] == 3  # Bob's $6 is still $4 short
+    assert square.payment_issues(fnb)[0]["players"] == 3  # Bob's $6 is still $4 short, Cat and Dan unpaid
     fnb.execute("UPDATE tournament SET excluded=1 WHERE id='t1'")
     assert square.payment_issues(fnb) == []
 
@@ -526,7 +531,7 @@ def test_missing_payments_show_in_needs_attention(client, monkeypatch):  # noqa:
     client.post("/square-payments/P1/link", data={"player_id": "u1"})
     for url in ("/", "/series/FNB"):
         page = client.get(url).text
-        assert "1 tournament with missing payments" in page and "💳 3 players unpaid or short, $15.00 missing" in page
+        assert "1 tournament with missing payments" in page and "💳 $10.00 short overall" in page
         assert 'href="/tournaments/t1#square"' in page and "1 payment ($5.00) not linked to a player" in page
     assert "1</b> tournament with missing payments" in client.get("/").text
 
@@ -566,3 +571,34 @@ def test_refunded_payments_on_the_page(client, monkeypatch):  # noqa: F811
     assert "Square payments <span class=\"n\">· 1</span>" in page and "taken in 1 payments" in page
     assert "refunded, nothing to link" in page and "(incl. $0.24 on 1 refunded payment)" in page
     assert page.count('action="/square-payments/R1/link"') == 0 and 'action="/square-payments/OK/link"' in page
+
+
+
+def test_unlinked_payments_that_cover_everyone_ask_for_linking_not_payment(fnb):
+    # as at LSC #90: more taken than expected, nothing linked yet
+    square.pull_tournament(fnb, FakeSquare([pay(f"P{i}", 1000, f"fp-{i}") for i in range(5)]), "t1")
+    r = square.reconcile(fnb, "t1")
+    assert (r["problems"], r["unmatched"], r["shortfall"], r["unlinked"]) == (0, 4, 0, 5)
+    assert {p["state"] for p in r["players"]} == {"unmatched"}
+    [i] = square.payment_issues(fnb)
+    assert (i["kind"], i["unlinked"], i["unlinked_cents"]) == ("link", 5, 5000)
+
+
+def test_payments_to_link_show_softly_in_needs_attention(client, monkeypatch):  # noqa: F811
+    monkeypatch.setattr(main, "GrpcParryClient", TwoNightsClient)
+    client.post("/series", data={"name": "FNB", "custom_slug": "fnb"})
+    client.post("/periods/1", data={"entry_fee": "5"})
+    client.post("/series/1/sync")
+    for _ in range(50):
+        if sync.status[1]["state"] != "running":
+            break
+        time.sleep(0.05)
+    oauth_env(monkeypatch, "sandbox")
+    fake = FakeSquare([pay(f"P{i}", 500, f"fp-{i}") for i in range(4)])
+    monkeypatch.setattr(main, "HttpSquareClient", lambda: fake)
+    page = client.post("/tournaments/t1/square/pull").text
+    assert "0</b> players unpaid, short or over" in page and "4</b> players not matched to a payment yet (4 payments to link)" in page
+    assert "not matched yet" in page
+    page = client.get("/").text
+    assert "0</b> tournaments with missing payments" in page and "1 with payments to link" in page
+    assert "🔗 4 payments ($20.00) to link to players" in page and "💳" not in page.split("Who is owed")[0]

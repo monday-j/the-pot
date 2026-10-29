@@ -145,7 +145,8 @@ CREATE TABLE IF NOT EXISTS square_payout_entry (
     net_cents INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_payout_entry_payment ON square_payout_entry(payment_id);
--- Payments pulled from Square for a tournament. player_id is set by hand ('manual') or from a card seen before ('auto').
+-- Payments pulled from Square for a tournament. player_id is set by hand ('manual') or from a card linked by hand before
+-- ('auto'); link is 'unlinked' for one unlinked by hand, which its card's links then leave alone, else 'none'.
 CREATE TABLE IF NOT EXISTS square_payment (
     id TEXT PRIMARY KEY,
     tournament_id TEXT NOT NULL REFERENCES tournament(id) ON DELETE CASCADE,

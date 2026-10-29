@@ -22,24 +22,38 @@ def window(start_date: str, tz: str | None = None) -> tuple[str, str]:
     return fmt(begin), fmt(end)
 
 
-def _auto_player(conn, tournament_id: str, fingerprint: str):
-    """The player a card was linked to by hand before, if they attended this tournament.
-
-    Only when it's unambiguous: a card that has paid for more than one player (e.g. someone paying for a friend) is
-    never auto-linked, and only a card's first payment in a tournament is, so a second tap stays unlinked and flagged.
-    """
-    if not fingerprint:
-        return None
-    if conn.execute("SELECT 1 FROM square_payment WHERE tournament_id=? AND fingerprint=? AND amount_cents > 0",
-                    (tournament_id, fingerprint)).fetchone():  # a refunded charge before it doesn't count
-        return None
-    owners = [r["pid"] for r in conn.execute(
+def _card_owners(conn, fingerprint: str) -> list[str]:
+    """The players a card has been linked to by hand (merged players resolved)."""
+    return [r["pid"] for r in conn.execute(
         """SELECT DISTINCT COALESCE(p.merged_into, p.id) AS pid FROM square_payment sp JOIN player p ON p.id=sp.player_id
            WHERE sp.fingerprint=? AND sp.link='manual'""", (fingerprint,))]
-    if len(owners) == 1 and conn.execute("SELECT 1 FROM tournament_entry_c WHERE tournament_id=? AND player_id=?",
-                                         (tournament_id, owners[0])).fetchone():
-        return owners[0]
-    return None
+
+
+def _auto_player(conn, fingerprint: str):
+    """The player a card has been linked to by hand, in any tournament (#22).
+
+    Only when it's unambiguous: a card that has paid for more than one player (e.g. someone paying for a friend) is
+    never auto-linked. A second tap the same night, or a payment at a tournament the player didn't enter, links too:
+    it then shows them as overpaid rather than hiding as unlinked.
+    """
+    owners = _card_owners(conn, fingerprint) if fingerprint else []
+    return owners[0] if len(owners) == 1 else None
+
+
+def _relink_card(conn, fingerprint: str):
+    """After a card's payment is linked or unlinked by hand, link its other payments to match, in every tournament.
+
+    Its automatic links follow the one player it's now linked to by hand, and its unlinked payments join them (not
+    ignored or refunded ones). Payments linked or unlinked by hand are left alone. A card no longer linked to anyone
+    loses its automatic links; one linked to several players keeps those it has but gains no more.
+    """
+    owners = _card_owners(conn, fingerprint)
+    if len(owners) > 1:
+        return
+    owner = owners[0] if owners else None
+    conn.execute("""UPDATE square_payment SET player_id=?, link=? WHERE fingerprint=?
+                    AND (link='auto' OR (link='none' AND ignored=0 AND amount_cents > 0))""",
+                 (owner, "auto" if owner else "none", fingerprint))
 
 
 def _location(conn, tournament_id: str) -> str:
@@ -71,7 +85,7 @@ def _store(conn, tournament_id: str | None, p, counts: dict):
         return
     if tournament_id is None:
         return
-    player = _auto_player(conn, tournament_id, p.fingerprint) if p.amount_cents > 0 else None  # not a refunded one
+    player = _auto_player(conn, p.fingerprint) if p.amount_cents > 0 else None  # not a refunded one
     paid_out_by = conn.execute(  # an imported Square payout that already listed this payment
         "SELECT deposit_id FROM square_payout_entry WHERE payment_id=? AND type='CHARGE' LIMIT 1", (p.id,)).fetchone()
     conn.execute("""INSERT INTO square_payment (id, tournament_id, player_id, link, amount_cents, fee_cents, created_at,
@@ -257,6 +271,9 @@ def reconcile(conn, tournament_id: str) -> dict:
     tags = {r["id"]: r["gamer_tag"] for r in conn.execute(
         "SELECT p.id, p.gamer_tag FROM tournament_entry_c te JOIN player p ON p.id=te.player_id WHERE te.tournament_id=?",
         (tournament_id,))}
+    for p in counted:  # a card's payments link to its player even where they weren't entered (#22)
+        if p["pid"]:
+            tags.setdefault(p["pid"], p["gamer_tag"])
     players = []
     for pid in set(expected) | set(paid):
         want, got = expected.get(pid, 0), paid.get(pid, 0)
@@ -311,7 +328,12 @@ def payment_issues(conn, series_id: int | None = None) -> list[dict]:
 
 
 def link_payment(conn, payment_id: str, player_id: str | None):
+    """Link a payment to a player by hand, or unlink it (it then stays unlinked, whatever its card is linked to later),
+    and link the card's other payments to match."""
     if player_id and not conn.execute("SELECT 1 FROM player WHERE id=?", (player_id,)).fetchone():
         raise RuleError("Unknown player")
     conn.execute("UPDATE square_payment SET player_id=?, link=? WHERE id=?",
-                 (player_id or None, "manual" if player_id else "none", payment_id))
+                 (player_id or None, "manual" if player_id else "unlinked", payment_id))
+    card = conn.execute("SELECT fingerprint FROM square_payment WHERE id=?", (payment_id,)).fetchone()
+    if card and card[0]:
+        _relink_card(conn, card[0])

@@ -144,16 +144,52 @@ def test_a_stored_payment_is_refreshed_even_outside_its_window(fnb, monkeypatch)
     assert tuple(fnb.execute("SELECT tournament_id, fee_cents FROM square_payment").fetchone()) == ("t1", 22)
 
 
-def test_a_second_tap_from_the_same_card_stays_unlinked(fnb):
+def test_a_second_tap_from_the_same_card_links_too(fnb):
     square.pull_tournament(fnb, FakeSquare([pay("P1", 1000, "fp-bob")]), "t1")
     square.link_payment(fnb, "P1", "u2")
-    # Bob pays for himself and then for a friend with the same card
+    # Bob pays for himself and then for a friend with the same card: he shows as overpaid, not hidden as unlinked
     night2 = FakeSquare([pay("P9", 1000, "fp-bob", "2026-01-08T09:00:00Z"),
                          pay("P10", 1000, "fp-bob", "2026-01-08T09:01:00Z")])
-    assert square.pull_tournament(fnb, night2, "t3")["linked"] == 1
+    assert square.pull_tournament(fnb, night2, "t3")["linked"] == 2
     rows = {r["id"]: (r["player_id"], r["link"]) for r in fnb.execute("SELECT * FROM square_payment WHERE tournament_id='t3'")}
-    assert rows == {"P9": ("u2", "auto"), "P10": (None, "none")}
-    assert square.reconcile(fnb, "t3")["unlinked"] == 1
+    assert rows == {"P9": ("u2", "auto"), "P10": ("u2", "auto")}
+    states = {p["id"]: p["state"] for p in square.reconcile(fnb, "t3")["players"]}
+    assert states["u2"] == "over"
+
+
+def test_linking_a_card_links_its_payments_everywhere(fnb):
+    """#22: linking one payment links the card's other payments, already pulled, in every tournament."""
+    square.pull_tournament(fnb, FakeSquare([pay("P1", 1000, "fp-bob"), pay("P2", 1000, "fp-bob", "2026-01-01T09:01:00Z"),
+                                            pay("P3", 1000, "fp-x")]), "t1")
+    square.pull_tournament(fnb, FakeSquare([pay("P9", 1000, "fp-bob", "2026-01-08T09:00:00Z")]), "t3")
+    fnb.execute("UPDATE square_payment SET ignored=1 WHERE id='P2'")
+    square.link_payment(fnb, "P9", "u2")  # linked at the later tournament: the earlier one catches up
+    rows = {r["id"]: (r["player_id"], r["link"]) for r in fnb.execute("SELECT * FROM square_payment")}
+    assert rows == {"P1": ("u2", "auto"), "P2": (None, "none"), "P3": (None, "none"), "P9": ("u2", "manual")}
+
+
+def test_a_card_paying_where_its_player_didnt_enter_still_links(fnb):
+    square.pull_tournament(fnb, FakeSquare([pay("P1", 1000, "fp-cat")]), "t1")
+    square.link_payment(fnb, "P1", "u3")  # Cat, who isn't entered at t3
+    square.pull_tournament(fnb, FakeSquare([pay("P9", 500, "fp-cat", "2026-01-08T09:00:00Z")]), "t3")
+    [cat] = [p for p in square.reconcile(fnb, "t3")["players"] if p["id"] == "u3"]
+    assert (cat["tag"], cat["expected"], cat["paid"], cat["state"]) == ("Cat", 0, 500, "over")
+
+
+def test_hand_links_and_unlinks_are_kept_and_auto_links_follow_corrections(fnb):
+    square.pull_tournament(fnb, FakeSquare([pay("P1", 1000, "fp-bob"), pay("P2", 1000, "fp-bob", "2026-01-01T09:01:00Z")]), "t1")
+    square.pull_tournament(fnb, FakeSquare([pay("P9", 1000, "fp-bob", "2026-01-08T09:00:00Z")]), "t3")
+    square.link_payment(fnb, "P1", "u1")  # a mistake: it was Bob's card
+    square.link_payment(fnb, "P2", None)  # and this one was for a friend
+    square.link_payment(fnb, "P1", "u2")
+    links = lambda: {r["id"]: (r["player_id"], r["link"]) for r in fnb.execute("SELECT * FROM square_payment")}
+    assert links() == {"P1": ("u2", "manual"), "P2": (None, "unlinked"), "P9": ("u2", "auto")}
+    square.link_payment(fnb, "P1", None)  # the card isn't linked to anyone any more
+    assert links() == {"P1": (None, "unlinked"), "P2": (None, "unlinked"), "P9": (None, "none")}
+    square.link_payment(fnb, "P2", "u2")
+    square.link_payment(fnb, "P9", "u5")  # now linked by hand to two players: nothing more links automatically
+    square.pull_tournament(fnb, FakeSquare([pay("P10", 1000, "fp-bob", "2026-01-08T09:05:00Z")]), "t3")
+    assert links()["P10"] == (None, "none")
 
 
 def test_a_card_that_paid_for_different_players_is_never_auto_linked(fnb):
@@ -536,6 +572,24 @@ def test_missing_payments_show_in_needs_attention(client, monkeypatch):  # noqa:
     assert "1</b> tournament with missing payments" in client.get("/").text
 
 
+def test_a_payment_linked_to_someone_not_entered_shows_on_the_page(client, monkeypatch):  # noqa: F811
+    monkeypatch.setattr(main, "GrpcParryClient", TwoNightsClient)
+    client.post("/series", data={"name": "FNB", "custom_slug": "fnb"})
+    client.post("/series/1/sync")
+    for _ in range(50):
+        if sync.status[1]["state"] != "running":
+            break
+        time.sleep(0.05)
+    oauth_env(monkeypatch, "sandbox")
+    fake = FakeSquare([pay("P1", 1000, "fp-cat"), pay("P9", 500, "fp-cat", "2026-01-08T09:00:00Z")])
+    monkeypatch.setattr(main, "HttpSquareClient", lambda: fake)
+    client.post("/tournaments/t3/square/pull")
+    client.post("/tournaments/t1/square/pull")
+    client.post("/square-payments/P1/link", data={"player_id": "u3"})
+    page = client.get("/tournaments/t3").text
+    assert '<option value="u3" selected>Cat (not entered)</option>' in page and "overpaid" in page
+
+
 def test_fully_refunded_payments_are_shown_but_not_counted(fnb):
     from dataclasses import replace
     # as at LSC #90: the same card charged $15 twice by mistake (both refunded in full), then the right $10
@@ -549,7 +603,6 @@ def test_fully_refunded_payments_are_shown_but_not_counted(fnb):
     # a later night: the refunded payments taught nothing, so only the hand-linked card auto-links
     night2 = FakeSquare([replace(pay("Z", 0, "fp-x", "2026-01-08T19:00:00Z"), fee_cents=24),
                          pay("Y", 1000, "fp-x", "2026-01-08T19:05:00Z")])
-    fnb.execute("INSERT INTO tournament_entry VALUES ('t3', 'u1')")
     square.pull_tournament(fnb, night2, "t3")
     links = {row[0]: row[1] for row in fnb.execute("SELECT id, link FROM square_payment WHERE tournament_id='t3'")}
     assert links == {"Z": "none", "Y": "auto"}  # the refunded one is never auto-linked, so it can't block Y

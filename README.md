@@ -42,11 +42,11 @@ you've paid them and what you still owe. For your LAN, behind one shared passwor
   completed payments (net of refunds) taken that day, from midnight until 6am the next morning in your `TZ`, at the
   venue's Square location if it has one set. They are compared with what attendees should have paid (entry fee + the
   bracket fee of each event entered) so a count or total mismatch stands out. Link each payment to a player to see who
-  is unpaid, short or overpaid. A card you've linked to a player is linked to them automatically at later tournaments
-  they attend (by Square's card fingerprint), but only when that's unambiguous: a card you've linked to more than one
-  player is never auto-linked, and a second payment from the same card in one night stays unlinked (someone paying for
-  a friend). Auto-links are tagged "auto". Payments that aren't fees can be ignored, and a payment is only ever counted
-  for one tournament.
+  is unpaid, short or overpaid. Once you've linked a card to a player (by Square's card fingerprint), all its payments
+  are linked to them, at every tournament, past and future: a second payment the same night, or one where they didn't
+  enter, then shows them as overpaid. Payments you've linked or unlinked by hand are never changed, and a card you've
+  linked to more than one player (someone paying for a friend) isn't linked automatically any more. Auto-links are
+  tagged "auto". Payments that aren't fees can be ignored, and a payment is only ever counted for one tournament.
 - **Card fees**: each Square payment's processing fee (as Square reports it, tax adjustments included) is stored and
   shown, with gross, fees and net per tournament and per series. Square adds the fee a little after the payment, so
   a fresh payment shows "pending" until a later pull fills it in.

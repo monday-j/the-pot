@@ -52,15 +52,18 @@ you've paid them and what you still owe. For your LAN, behind one shared passwor
 - **Card fees**: each Square payment's processing fee (as Square reports it, tax adjustments included) is stored and
   shown, with gross, fees and net per tournament and per series. Square adds the fee a little after the payment, so
   a fresh payment shows "pending" until a later pull fills it in.
-- **Bank**: Square pays takings out net of fees, usually one deposit per business day. "Import payouts from Square" on
-  the Bank page (and the automatic pull) brings those payouts in as deposits, matched to the payments they covered,
-  with Square's own breakdown: tournament payments, other Square takings (payments the app never pulled, e.g. outside
-  tournament times) and refunds/fees. Each imported payout is "expected" until you tick **Seen in bank** against your
-  statement; failed payouts and ones not seen after 3 days are flagged. It uses the `PAYOUTS_READ` permission granted
-  during setup. You can also record a deposit by hand from the statement and tick the Square payments it covers (it
-  suggests whole days just before the deposit that fit). Deposits that don't add up, and Square payments still not in the bank after 3 days,
-  are flagged, and tournament pages show how much of their net is banked. Ignored Square payments count here too,
-  since Square deposits them. Cash and other accounts aren't covered yet.
+- **Bank**: reconcile by balance. On the Bank page, enter the bank balance at the end of a day: it's compared with
+  what the app expects (the last reconciled balance, plus deposits, minus payouts to players and venues marked paid
+  since), and any difference is recorded with your note. The first reconciliation sets the opening balance. Deposits
+  are Square's payouts ("Import payouts from Square", or the automatic pull; uses the `PAYOUTS_READ` permission
+  granted during setup), each with Square's breakdown of the payments, refunds and fees it covered, plus any you add
+  by hand from the statement. Failed payouts don't count. Cash and other money through the account aren't tracked:
+  note them against the difference.
+- **Locking**: a reconciliation locks everything dated on or before its day: deposits, and payouts to players and
+  venues it took in (they can't be undone or edited), and every tournament up to then with no issues left (no
+  payments missing or to link, all events final). Tournaments with issues stay editable (payment links, ignores,
+  "sorted out") and lock as soon as they're clear. A locked tournament's settings, payouts and payment links can't
+  change and it isn't recomputed. Undo the latest reconciliation, one at a time, to unlock.
 - **Pulling a whole series**: "Pull Square payments (all tournaments)" on the series page pulls every tournament in the
   background with a single Square query per location (spanning all their dates, then filing each payment under the
   night it belongs to), so a season costs a few requests rather than one per night. Set `SQUARE_AUTO_PULL_HOURS`

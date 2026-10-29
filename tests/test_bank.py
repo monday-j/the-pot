@@ -1,7 +1,7 @@
 import pytest
 from dataclasses import replace
 
-from app import bank, config, square
+from app import bank, config, square, sync
 from app.payouts import RuleError
 from tests.test_square import FakeSquare, TwoNightsClient, fnb, oauth_env, pay  # noqa: F401 (fixtures)
 from tests.test_sync import conn  # noqa: F401
@@ -29,40 +29,89 @@ def deposit(conn, day, cents):
                         (bank.save_deposit(conn, None, day, cents, "SQUARE", ""),)).fetchone()
 
 
-def test_suggestion_ticks_whole_earlier_days_that_fit(two_nights):
-    d = deposit(two_nights, "2026-01-02", 2543)  # night 1 net: 978 + 978 + 587 (the drink counts: Square paid it out)
-    options = bank.candidates(two_nights, d)
-    assert {p["id"]: p["suggested"] for p in options} == {"A": True, "B": True, "D": True}  # night 2 is after it
-    later = deposit(two_nights, "2026-01-09", 1000)
-    assert {p["id"]: p["suggested"] for p in bank.candidates(two_nights, later)} == {"A": False, "B": False, "D": False,
-                                                                                    "C": True}
+def pay_out(conn, day, *payout_ids):
+    """Mark payouts paid at midday (UTC) on `day`."""
+    for pid in payout_ids:
+        conn.execute("UPDATE payout SET status='paid', paid_at=? WHERE id=?", (f"{day}T12:00:00+00:00", pid))
 
 
-def test_matching_adds_up_and_flags_differences(two_nights):
-    d = deposit(two_nights, "2026-01-02", 2543)
-    bank.match(two_nights, d["id"], ["A", "B", "D"])
-    s = bank.summary(two_nights, d)
-    assert (s["matched"], s["difference"], len(s["payments"])) == (2543, 0, 3)
-    bank.unmatch(two_nights, d["id"], "D")
-    assert bank.summary(two_nights, d)["difference"] == 587
-    other = deposit(two_nights, "2026-01-03", 100)
-    bank.match(two_nights, other["id"], ["A"])  # already in the first deposit: stays there
-    assert bank.summary(two_nights, other)["payments"] == []
-    two_nights.execute("DELETE FROM bank_deposit WHERE id=?", (d["id"],))
-    assert two_nights.execute("SELECT COUNT(*) FROM square_payment WHERE deposit_id IS NOT NULL").fetchone()[0] == 0
+def test_the_first_reconciliation_is_the_opening_balance_and_later_ones_compare(two_nights):
+    early = deposit(two_nights, "2026-01-02", 2543)
+    e = bank.expected(two_nights, "2026-01-05")
+    assert e["expected"] is None and e["in"] == 2543  # nothing to compare yet
+    first = bank.reconcile(two_nights, "2026-01-05", 10000, "opening")
+    assert two_nights.execute("SELECT expected_cents FROM reconciliation WHERE id=?", (first,)).fetchone()[0] == 10000
+    assert two_nights.execute("SELECT reconciliation_id FROM bank_deposit WHERE id=?",
+                              (early["id"],)).fetchone()[0] == first  # taken in, and locked
+    deposit(two_nights, "2026-01-09", 1000)
+    deposit(two_nights, "2026-01-20", 5000)  # after the next reconciliation's day: not counted yet
+    [po] = [r[0] for r in two_nights.execute("SELECT id FROM payout WHERE event_id='e1' ORDER BY id LIMIT 1")]
+    amount = two_nights.execute("SELECT amount_cents FROM payout WHERE id=?", (po,)).fetchone()[0]
+    pay_out(two_nights, "2026-01-08", po)
+    e = bank.expected(two_nights, "2026-01-10")
+    assert (e["in"], e["out"], e["expected"]) == (1000, amount, 10000 + 1000 - amount)
+    bank.reconcile(two_nights, "2026-01-10", 10000 + 1000 - amount - 300, "  $3 bank fee  ")  # doesn't match: kept
+    [latest, opening] = bank.history(two_nights)
+    assert (latest["difference"], latest["note"], latest["deposits"], latest["paid_out"]) == (-300, "$3 bank fee", 1, 1)
+    assert opening["difference"] == 0
+    assert bank.expected(two_nights, "2026-01-31")["expected"] == latest["balance_cents"] + 5000
 
 
-def test_unbanked_days_are_grouped_and_flagged_when_overdue(two_nights):
-    days = bank.unbanked(two_nights, today="2026-01-09")
-    assert [(d["day"], d["count"], d["gross"], d["fees"], d["net"], d["pending"], d["overdue"]) for d in days] == [
-        ("2026-01-01", 3, 2600, 57, 2543, 0, True), ("2026-01-08", 1, 1000, 0, 1000, 1, False)]
+def test_reconciliations_move_forward_and_only_the_latest_is_undone(two_nights, monkeypatch):
+    monkeypatch.setattr(bank, "today", lambda: "2026-02-01")
+    with pytest.raises(RuleError, match="hasn't happened"):
+        bank.reconcile(two_nights, "2026-02-02", 0, "")
+    with pytest.raises(RuleError, match="no reconciliation"):
+        bank.undo_latest(two_nights)
+    bank.reconcile(two_nights, "2026-01-05", 0, "")
+    with pytest.raises(RuleError, match="after 2026-01-05"):
+        bank.reconcile(two_nights, "2026-01-05", 0, "")
+    d = deposit(two_nights, "2026-01-09", 1000)
+    second = bank.reconcile(two_nights, "2026-01-10", 1000, "")
+    bank.undo_latest(two_nights)
+    assert two_nights.execute("SELECT reconciliation_id FROM bank_deposit WHERE id=?", (d["id"],)).fetchone()[0] is None
+    assert bank.latest(two_nights)["reconciled_on"] == "2026-01-05"
+    assert second not in [r["id"] for r in bank.history(two_nights)]
 
 
-def test_tournament_reconcile_reports_what_is_banked(two_nights):
-    d = deposit(two_nights, "2026-01-02", 2543)
-    bank.match(two_nights, d["id"], ["A"])
+def test_money_dated_in_a_reconciled_period_is_locked(two_nights):
+    bank.reconcile(two_nights, "2026-01-05", 0, "")
+    with pytest.raises(RuleError, match="locked by the bank reconciliation of 2026-01-05"):
+        deposit(two_nights, "2026-01-05", 100)
+    deposit(two_nights, "2026-01-06", 100)
+
+
+def test_tournaments_lock_once_clear_and_unlock_with_the_reconciliation(two_nights):
+    bank.reconcile(two_nights, "2026-01-31", 0, "")
+    assert square.lock_clear_tournaments(two_nights) == 0  # both nights have payments to sort out
+    square.link_payment(two_nights, "A", "u1")
+    square.link_payment(two_nights, "B", "u2")
+    for player in ("u3", "u4"):
+        square.resolve_entrant(two_nights, "t1", player, "paid cash")
+    assert square.lock_clear_tournaments(two_nights) == 1
+    locked = {r[0]: r[1] for r in two_nights.execute("SELECT id, locked_by FROM tournament")}
+    assert locked["t1"] is not None and locked["t3"] is None
+    with pytest.raises(RuleError, match="Locked by the bank reconciliation of 2026-01-31"):
+        square.link_payment(two_nights, "A", None)
+    with pytest.raises(RuleError, match="Locked"):
+        square.unresolve_entrant(two_nights, "t1", "u3")
+    square.link_payment(two_nights, "C", "u2")  # t3 isn't locked: still editable
+    before = {r[0]: r[1] for r in two_nights.execute(
+        "SELECT po.id, po.amount_cents FROM payout po JOIN event e ON e.id=po.event_id WHERE e.tournament_id='t1'")}
+    two_nights.execute("UPDATE series_period SET entry_fee_cents=9900")
+    sync.recompute_series(two_nights, 1)  # a locked tournament's figures are frozen
+    after = {r[0]: r[1] for r in two_nights.execute(
+        "SELECT po.id, po.amount_cents FROM payout po JOIN event e ON e.id=po.event_id WHERE e.tournament_id='t1'")}
+    assert after == before
+    bank.undo_latest(two_nights)
+    assert two_nights.execute("SELECT locked_by FROM tournament WHERE id='t1'").fetchone()[0] is None
+    square.link_payment(two_nights, "A", None)
+
+
+def test_tournament_reconcile_reports_what_is_banked(two_nights, payout_square):
+    bank.import_payouts(two_nights, payout_square, "a", "b")
     r = square.reconcile(two_nights, "t1")
-    assert (r["net"], r["banked"]) == (1956, 978)  # the ignored drink isn't tournament takings
+    assert (r["net"], r["banked"]) == (1956, 1956)  # A and B; the ignored drink isn't tournament takings
 
 
 def test_deposit_validation(two_nights):
@@ -71,17 +120,32 @@ def test_deposit_validation(two_nights):
 
 
 def test_bank_pages(client):  # noqa: F811
-    assert "No deposits recorded yet" in client.get("/bank").text
+    page = client.get("/bank").text
+    assert "No deposits recorded yet" in page and "No reconciliations yet" in page
     assert "not a date" in client.post("/bank", data={"deposited_on": "soon", "amount": "5"}).text
     assert "more than $0" in client.post("/bank", data={"deposited_on": "2026-01-02", "amount": "0"}).text
     page = client.post("/bank", data={"deposited_on": "2026-01-02", "amount": "25.43", "reference": "SQ *PAYOUT"}).text
-    assert "Deposit 2026-01-02" in page and "SQ *PAYOUT" in page and "No unbanked Square payments" in page
+    assert "Deposit 2026-01-02" in page and "SQ *PAYOUT" in page
     page = client.post("/bank/1", data={"deposited_on": "2026-01-03", "amount": "30", "note": "fixed"}).text
     assert "Deposit 2026-01-03" in page and "$30.00</b> deposited" in page
-    page = client.get("/bank").text
-    assert 'href="/bank/1"' in page and "$30.00" in page and "Every Square payment is matched" in page
+    page = client.get("/bank?on=2026-01-04").text
+    assert 'href="/bank/1"' in page and "$30.00</b> in" in page and "The opening balance" in page
     assert 'href="/bank"' in client.get("/").text  # in the nav
-    assert "No deposits recorded yet" in client.post("/bank/1/delete").text
+    page = client.post("/bank/reconcile", data={"reconciled_on": "2026-01-04", "balance": "130", "note": "start"}).text
+    assert "Reconciled to <b>2026-01-04</b>" in page and "(opening balance)" in page
+    page = client.post("/bank", data={"deposited_on": "2026-01-03", "amount": "5"}).text
+    assert "locked by the bank reconciliation of 2026-01-04" in page
+    client.post("/bank", data={"deposited_on": "2026-01-05", "amount": "20"})
+    page = client.get("/bank?on=2026-01-06").text
+    assert "$150.00</b> expected on 2026-01-06" in page
+    page = client.post("/bank/reconcile", data={"reconciled_on": "2026-01-06", "balance": "149",
+                                                 "note": "fee"}).text
+    assert "-$1.00" in page and "Reconciled to <b>2026-01-06</b>" in page
+    assert "Locked by the bank reconciliation of 2026-01-04" in client.post("/bank/1/delete").text
+    assert "can't change" not in client.get("/bank/2").text
+    client.post("/bank/reconcile/undo")
+    client.post("/bank/reconcile/undo")
+    assert "No reconciliations yet" in client.post("/bank/1/delete").text
     assert client.get("/bank/1").status_code == 404
 
 
@@ -119,17 +183,13 @@ def test_import_matches_our_payments_and_lists_other_takings(two_nights, payout_
     r = bank.import_payouts(two_nights, payout_square, "2026-01-01T00:00:00Z", "2026-01-09T00:00:00Z")
     assert r == {"new": 1, "updated": 0, "unchanged": 0, "matched": 2}
     d = two_nights.execute("SELECT * FROM bank_deposit").fetchone()
-    assert (d["deposited_on"], d["amount_cents"], d["payout_status"], d["seen_in_bank"]) == ("2026-01-03", 3412, "SENT", 0)
-    s = bank.summary(two_nights, d, today="2026-01-04")
-    assert s["imported"] and s["difference"] == 0 and s["flag"] == ""
+    assert (d["deposited_on"], d["amount_cents"], d["payout_status"]) == ("2026-01-03", 3412, "SENT")
+    s = bank.summary(two_nights, d)
+    assert s["imported"] and sum(e["net_cents"] for e in s["entries"]) == d["amount_cents"]
     assert (s["tournament"], s["other"], s["adjustment"]) == ({"count": 2, "net": 1956}, {"count": 1, "net": 1956},
                                                              {"count": 1, "net": -500})
     matched = {r[0] for r in two_nights.execute("SELECT id FROM square_payment WHERE deposit_id=?", (d["id"],))}
     assert matched == {"A", "B"}  # the drink (D) wasn't in this payout, so it stays unbanked
-    assert bank.summary(two_nights, d, today="2026-01-09")["flag"] == "not seen in the bank"
-    bank.set_seen(two_nights, d["id"], True)
-    d = two_nights.execute("SELECT * FROM bank_deposit").fetchone()
-    assert bank.summary(two_nights, d, today="2026-01-09")["flag"] == ""
 
 
 def test_reimport_only_fetches_entries_for_changed_payouts(two_nights, payout_square):
@@ -141,16 +201,19 @@ def test_reimport_only_fetches_entries_for_changed_payouts(two_nights, payout_sq
     payout_square.calls.clear()
     assert bank.import_payouts(two_nights, payout_square, "a", "b")["updated"] == 1
     assert ("entries", "po_1") in payout_square.calls
-    d = two_nights.execute("SELECT * FROM bank_deposit").fetchone()
-    assert bank.summary(two_nights, d)["flag"] == "payout failed"
+    assert two_nights.execute("SELECT payout_status FROM bank_deposit").fetchone()[0] == "FAILED"
+    assert bank.expected(two_nights, "2026-01-31")["in"] == 0  # a failed payout never arrived
     assert two_nights.execute("SELECT COUNT(*) FROM square_payout_entry").fetchone()[0] == 4  # replaced, not doubled
 
 
-def test_import_never_moves_a_payment_matched_by_hand(two_nights, payout_square):
-    manual = deposit(two_nights, "2026-01-02", 978)
-    bank.match(two_nights, manual["id"], ["A"])
-    assert bank.import_payouts(two_nights, payout_square, "a", "b")["matched"] == 1  # only B
-    assert two_nights.execute("SELECT deposit_id FROM square_payment WHERE id='A'").fetchone()[0] == manual["id"]
+def test_a_reconciled_payout_is_left_alone_on_reimport(two_nights, payout_square):
+    bank.import_payouts(two_nights, payout_square, "a", "b")
+    bank.reconcile(two_nights, "2026-01-05", 3412, "")
+    payout_square.payouts = [replace(payout_square.payouts[0], amount_cents=1, version=2)]
+    payout_square.calls.clear()
+    assert bank.import_payouts(two_nights, payout_square, "a", "b")["unchanged"] == 1
+    assert ("entries", "po_1") not in payout_square.calls
+    assert two_nights.execute("SELECT amount_cents FROM bank_deposit").fetchone()[0] == 3412
 
 
 def test_a_payment_pulled_after_its_payout_is_matched_when_stored(two_nights, payout_square, monkeypatch):
@@ -193,13 +256,41 @@ def test_payout_pages(client, monkeypatch, payout_square):  # noqa: F811
         time.sleep(0.02)
     page = client.get("/bank").text
     assert "Square payouts, " in page and "1 new and 0 updated payouts since 2026-01-01" in page
-    assert "Square payout" in page and "not seen in the bank" in page  # due back in January, long overdue
+    assert "Square payout" in page and "$34.12</b> in" in page
     page = client.get("/bank/1").text
-    assert "other Square takings (1)" in page and "$0.00</b> adds up" in page and "Seen in bank" in page
-    assert "Add payments" not in page  # Square's entries are the breakdown
+    assert "other Square takings (1)" in page and "Add payments" not in page  # Square's entries are the breakdown
     page = client.post("/bank/1", data={"deposited_on": "2030-01-01", "amount": "1", "reference": "SQ 123"}).text
     assert "SQ 123" in page and "Deposit 2026-01-03" in page and "$34.12</b> deposited" in page  # date/amount kept
-    page = client.post("/bank/1/seen", data={"seen": "1"}).text
-    assert "Seen in the bank." in page
-    assert "class=\"bad\">not seen in the bank" not in client.get("/bank").text
     assert "$19.56</b> of it" in client.get("/tournaments/t1").text  # A and B, banked via the payout
+
+
+def test_locked_things_refuse_changes_on_the_pages(client, monkeypatch):  # noqa: F811
+    import time
+    from app import main
+    monkeypatch.setattr(main, "GrpcParryClient", TwoNightsClient)
+    client.post("/series", data={"name": "FNB", "custom_slug": "fnb"})
+    with main.db.session() as conn:
+        conn.execute("""INSERT INTO rule (series_id, period_id, game_name, fixed_pool_cents, splits)
+                        VALUES (1, 1, 'Smash Ultimate', 1000, '["100"]')""")
+    client.post("/series/1/sync")
+    for _ in range(50):
+        if sync.status[1]["state"] != "running":
+            break
+        time.sleep(0.05)
+    with main.db.session() as conn:
+        po = conn.execute("SELECT id FROM payout ORDER BY id LIMIT 1").fetchone()[0]
+    client.post(f"/payouts/{po}/paid", data={"note": "cash"})
+    client.post("/bank/reconcile", data={"reconciled_on": bank.today(), "balance": "0"})
+    page = client.get("/tournaments/t1").text  # no Square payments pulled, no unfinalised events: clear
+    assert "Locked by the <a href=\"/bank\">bank reconciliation</a>" in page
+    assert "Locked by the bank reconciliation" in client.post("/tournaments/t1/entry-fee", data={"entry_fee": "9"}).text
+    assert "Locked by the bank reconciliation" in client.post("/tournaments/t1/venue", data={"venue_mode": "none"}).text
+    assert "Locked by the bank reconciliation" in client.post("/tournaments/t1/exclude").text
+    assert "Locked by the bank reconciliation" in client.post(f"/payouts/{po}/paid", data={"undo": "1"}).text
+    page = client.get("/bank").text
+    assert "1 paid out, 2 tournaments" in page
+    client.post("/bank/reconcile/undo")
+    assert "Locked by" not in client.get("/tournaments/t1").text
+    client.post(f"/payouts/{po}/paid", data={"undo": "1"})
+    with main.db.session() as conn:
+        assert conn.execute("SELECT status FROM payout WHERE id=?", (po,)).fetchone()[0] == "owed"

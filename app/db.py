@@ -56,7 +56,8 @@ CREATE TABLE IF NOT EXISTS tournament (
     venue_id INTEGER REFERENCES venue(id) ON DELETE SET NULL,
     venue_flat_cents INTEGER NOT NULL DEFAULT 0,
     venue_entry_pct TEXT NOT NULL DEFAULT '0',
-    venue_bracket_pct TEXT NOT NULL DEFAULT '0'
+    venue_bracket_pct TEXT NOT NULL DEFAULT '0',
+    locked_by INTEGER REFERENCES reconciliation(id) ON DELETE SET NULL  -- see square.lock_clear_tournaments
 );
 CREATE TABLE IF NOT EXISTS event (
     id TEXT PRIMARY KEY,
@@ -108,6 +109,7 @@ CREATE TABLE IF NOT EXISTS payout (
     status TEXT NOT NULL DEFAULT 'owed',
     paid_at TEXT,
     note TEXT NOT NULL DEFAULT '',
+    reconciliation_id INTEGER REFERENCES reconciliation(id) ON DELETE SET NULL,
     UNIQUE (event_id, player_id)
 );
 CREATE TABLE IF NOT EXISTS venue_payment (
@@ -117,11 +119,21 @@ CREATE TABLE IF NOT EXISTS venue_payment (
     computed_cents INTEGER NOT NULL,
     status TEXT NOT NULL DEFAULT 'owed',
     paid_at TEXT,
-    note TEXT NOT NULL DEFAULT ''
+    note TEXT NOT NULL DEFAULT '',
+    reconciliation_id INTEGER REFERENCES reconciliation(id) ON DELETE SET NULL
+);
+-- The bank balance on a day, entered by hand, against the balance the app expected (see bank.py). Deposits and
+-- payouts it took in (their reconciliation_id) and tournaments it locked (locked_by) are unlocked when it's deleted.
+CREATE TABLE IF NOT EXISTS reconciliation (
+    id INTEGER PRIMARY KEY,
+    reconciled_on TEXT NOT NULL,
+    balance_cents INTEGER NOT NULL,
+    expected_cents INTEGER NOT NULL,
+    note TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
 );
 -- Bank deposits, recorded by hand from the bank statement or imported from Square's payouts (square_payout_id set);
--- Square payments are matched to the deposit that paid them out. An imported payout is only "expected" until it's
--- ticked as seen in the bank; manual deposits are typed from the statement, so they're seen already.
+-- Square payments are matched to the payout that paid them out. seen_in_bank is legacy (before #27), no longer read.
 CREATE TABLE IF NOT EXISTS bank_deposit (
     id INTEGER PRIMARY KEY,
     deposited_on TEXT NOT NULL,
@@ -131,7 +143,8 @@ CREATE TABLE IF NOT EXISTS bank_deposit (
     square_payout_id TEXT,
     payout_status TEXT NOT NULL DEFAULT '',
     payout_version INTEGER,
-    seen_in_bank INTEGER NOT NULL DEFAULT 1
+    seen_in_bank INTEGER NOT NULL DEFAULT 1,
+    reconciliation_id INTEGER REFERENCES reconciliation(id) ON DELETE SET NULL
 );
 -- What an imported payout covered, as Square itemises it: CHARGE (a payment), REFUND, FEE, etc.
 CREATE TABLE IF NOT EXISTS square_payout_entry (
@@ -240,6 +253,7 @@ ADDED_COLUMNS = {
         "venue_flat_cents": "INTEGER NOT NULL DEFAULT 0",
         "venue_entry_pct": "TEXT NOT NULL DEFAULT '0'",
         "venue_bracket_pct": "TEXT NOT NULL DEFAULT '0'",
+        "locked_by": "INTEGER REFERENCES reconciliation(id) ON DELETE SET NULL",
     },
     "venue": {
         "square_location_id": "TEXT NOT NULL DEFAULT ''",
@@ -253,9 +267,14 @@ ADDED_COLUMNS = {
         "payout_status": "TEXT NOT NULL DEFAULT ''",
         "payout_version": "INTEGER",
         "seen_in_bank": "INTEGER NOT NULL DEFAULT 1",
+        "reconciliation_id": "INTEGER REFERENCES reconciliation(id) ON DELETE SET NULL",
     },
     "venue_payment": {
         "venue_id": "INTEGER REFERENCES venue(id) ON DELETE SET NULL",
+        "reconciliation_id": "INTEGER REFERENCES reconciliation(id) ON DELETE SET NULL",
+    },
+    "payout": {
+        "reconciliation_id": "INTEGER REFERENCES reconciliation(id) ON DELETE SET NULL",
     },
 }
 

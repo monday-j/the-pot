@@ -173,6 +173,7 @@ def _run(key, client_factory, job, auto: bool, message: str = "Pulling payments 
 def _series_job(series_id: int, since: str | None):
     def job(conn, client):
         r = pull_series(conn, client, series_id, since)
+        lock_clear_tournaments(conn)
         message = f"{r['new']} new and {r['updated']} updated payments across {r['tournaments']} tournaments"
         return message + (f", {r['linked']} linked automatically" if r["linked"] else "")
     return job
@@ -333,16 +334,39 @@ def payment_issues(conn, series_id: int | None = None) -> list[dict]:
     return out
 
 
+def lock_clear_tournaments(conn) -> int:
+    """Lock the tournaments up to the latest bank reconciliation that are clear of issues: no payments missing or to
+    link, no events with unfinalised placements (#27). A locked tournament's figures and payment links can't change,
+    and imports skip it (#28), until that reconciliation is undone. Returns how many were locked."""
+    last = bank.latest(conn)
+    if last is None:
+        return 0
+    flagged = {i["tournament_id"] for i in payment_issues(conn)} | {i["tournament_id"] for i in sync.event_issues(conn)}
+    ids = [r[0] for r in conn.execute(
+        """SELECT id FROM tournament WHERE locked_by IS NULL AND excluded=0 AND COALESCE(start_date, '') != ''
+           AND start_date <= ?""", (last["reconciled_on"],)) if r[0] not in flagged]
+    conn.executemany("UPDATE tournament SET locked_by=? WHERE id=?", [(last["id"], tid) for tid in ids])
+    return len(ids)
+
+
+def check_unlocked(conn, tournament_id: str):
+    t = conn.execute("SELECT locked_by FROM tournament WHERE id=?", (tournament_id,)).fetchone()
+    if t and t["locked_by"] is not None:
+        raise RuleError(bank.locked_message(conn, t["locked_by"]))
+
+
 def resolve_entrant(conn, tournament_id: str, player_id: str, note: str):
     """Mark an entrant's payment as sorted out some other way (#29), with a note saying how."""
     if not note.strip():
         raise RuleError("Say how it was sorted out, e.g. who paid for them")
+    check_unlocked(conn, tournament_id)
     conn.execute("""INSERT INTO entrant_override (tournament_id, player_id, note, created_at) VALUES (?,?,?,?)
                     ON CONFLICT(tournament_id, player_id) DO UPDATE SET note=excluded.note""",
                  (tournament_id, player_id, note.strip(), sync.now()))
 
 
 def unresolve_entrant(conn, tournament_id: str, player_id: str):
+    check_unlocked(conn, tournament_id)
     conn.execute("DELETE FROM entrant_override WHERE tournament_id=? AND player_id=?", (tournament_id, player_id))
 
 
@@ -351,6 +375,9 @@ def link_payment(conn, payment_id: str, player_id: str | None):
     and link the card's other payments to match."""
     if player_id and not conn.execute("SELECT 1 FROM player WHERE id=?", (player_id,)).fetchone():
         raise RuleError("Unknown player")
+    payment = conn.execute("SELECT tournament_id FROM square_payment WHERE id=?", (payment_id,)).fetchone()
+    if payment:
+        check_unlocked(conn, payment["tournament_id"])
     conn.execute("UPDATE square_payment SET player_id=?, link=? WHERE id=?",
                  (player_id or None, "manual" if player_id else "unlinked", payment_id))
     card = conn.execute("SELECT fingerprint FROM square_payment WHERE id=?", (payment_id,)).fetchone()

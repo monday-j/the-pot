@@ -113,9 +113,17 @@ def event_issues(conn, series_id: int | None = None, tournament_id: str | None =
     return out
 
 
+def locked(conn, sql: str, key) -> bool:
+    """Whether a tournament is locked by a bank reconciliation (#27): its payouts and venue payable are then frozen."""
+    row = conn.execute(sql, (key,)).fetchone()
+    return bool(row and row[0] is not None)
+
+
 def recompute_event(conn, event_id: str):
     """Upsert payouts for one event (none while its placements are unfinalised).
     Paid rows keep their amount; a changed result shows as a discrepancy."""
+    if locked(conn, "SELECT t.locked_by FROM event e JOIN tournament t ON t.id=e.tournament_id WHERE e.id=?", event_id):
+        return
     finalised = not event_issues(conn, event_id=event_id) and conn.execute(
         "SELECT 1 FROM event WHERE id=?", (event_id,)).fetchone() is not None
     info = event_pool(conn, event_id) if finalised else None
@@ -193,6 +201,8 @@ def venue_total(info) -> int:
 def recompute_venue(conn, tournament_id: str):
     """Upsert the venue payable. Like player payouts, a paid row keeps its amount and a changed
     calculation shows as a discrepancy; an unpaid row is removed when there is nothing to pay."""
+    if locked(conn, "SELECT locked_by FROM tournament WHERE id=?", tournament_id):
+        return
     info = venue_inputs(conn, tournament_id)
     total = venue_total(info)
     venue_id = info["venue_id"] if info else None
@@ -391,7 +401,8 @@ _lock = threading.Lock()
 status: dict = {}  # series_id -> {"state": "running"|"done"|"error", "message": str}
 
 
-def start_sync(series_id: int, client_factory) -> bool:
+def start_sync(series_id: int, client_factory, after=None) -> bool:
+    """Sync a series in the background, then run after(conn), if given, in the same transaction."""
     with _lock:
         if status.get(series_id, {}).get("state") == "running":
             return False
@@ -403,6 +414,8 @@ def start_sync(series_id: int, client_factory) -> bool:
             try:
                 with db.session() as conn:
                     result = sync_series(conn, client, series_id)
+                    if after:
+                        after(conn)
             finally:
                 getattr(client, "close", lambda: None)()
             status[series_id] = {"state": "done", "message": f"Imported {result['tournaments']} tournaments"}

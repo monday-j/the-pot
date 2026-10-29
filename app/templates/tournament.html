@@ -1,7 +1,8 @@
 {% extends "base.html" %}{% import "_macros.html" as m %}
 {% block crumbs %}<div class="crumbs"><a href="/series">Series</a>{% if t.series_id %}<a href="/series/{{ t.series_code or t.series_id }}" title="{{ t.series_name }}">{{ t.series_code or t.series_name }}</a>{% endif %}<span>{{ t.name }}</span></div>{% endblock %}
 {% block body %}
-<h1>{{ t.name }}{% if t.excluded %} <span class="tag">excluded</span>{% endif %}</h1>
+<h1>{{ t.name }}{% if t.excluded %} <span class="tag">excluded</span>{% endif %}{% if t.locked_by %} <span class="tag" title="Locked by the bank reconciliation of {{ t.locked_on }}">locked</span>{% endif %}</h1>
+{% if t.locked_by %}<div class="strip">Locked by the <a href="/bank">bank reconciliation</a> of {{ t.locked_on }}: its figures, settings and payment links can't change, and it isn't re-imported. Undo that reconciliation to change it.</div>{% endif %}
 <div class="summary"><span>{{ t.start_date }}</span><span><b>{{ attendees|length }}</b> attendees</span><span><b>{{ events|length }}</b> events</span>
 <span>series: {{ m.series(t.series_id, t.series_name, t.series_code) }}</span>{% if t.period_id %}<span><a href="/series/{{ t.series_code or t.series_id }}?period={{ t.period_id }}#rules">terms {{ "from " ~ t.period_start if t.period_start else "from the start" }}</a>{% if t.series_venue %} · {{ m.venue(t.series_venue_id, t.series_venue) }}{% endif %}</span>{% endif %}<span>{{ m.parry(t.slug) }}</span></div>
 <form method="post" action="/tournaments/{{ t.id }}/entry-fee" class="toolbar">

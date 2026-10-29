@@ -413,7 +413,7 @@ def sync_now(series_id: int):
         one(conn, "SELECT id FROM series WHERE id=?", series_id)
     if not config.api_key():
         return back(f"/series/{series_id}", "No API key configured (PARRY_API_KEY)")
-    sync.start_sync(series_id, GrpcParryClient)
+    sync.start_sync(series_id, GrpcParryClient, square.lock_clear_tournaments)  # newly clear ones lock
     return back(f"/series/{series_id}")
 
 
@@ -436,6 +436,8 @@ def add_tournament(series_id: int, link: str = Form(...)):
 def toggle_exclude(tournament_id: str):
     with db.session() as conn:
         t = one(conn, "SELECT * FROM tournament WHERE id=?", tournament_id)
+        if t["locked_by"]:
+            return back(f"/tournaments/{tournament_id}", bank.locked_message(conn, t["locked_by"]))
         conn.execute("UPDATE tournament SET excluded = 1 - excluded WHERE id=?", (tournament_id,))
         for e in conn.execute("SELECT id FROM event WHERE tournament_id=?", (tournament_id,)).fetchall():
             sync.recompute_event(conn, e["id"])  # excluded tournaments drop their unpaid payouts
@@ -448,6 +450,7 @@ def tournament_entry_fee(tournament_id: str, entry_fee: str = Form("")):
     try:
         with db.session() as conn:
             t = one(conn, "SELECT * FROM tournament WHERE id=?", tournament_id)
+            square.check_unlocked(conn, tournament_id)
             conn.execute("UPDATE tournament SET entry_fee_cents=? WHERE id=?",
                          (dollars_to_cents(entry_fee) if entry_fee.strip() else None, tournament_id))
             for e in conn.execute("SELECT id FROM event WHERE tournament_id=?", (tournament_id,)).fetchall():
@@ -467,6 +470,7 @@ def tournament_venue(tournament_id: str, venue_mode: str = Form("series"), venue
         cut = parse_venue(venue_flat, venue_entry_pct, venue_bracket_pct)
         with db.session() as conn:
             one(conn, "SELECT id FROM tournament WHERE id=?", tournament_id)
+            square.check_unlocked(conn, tournament_id)
             conn.execute("""UPDATE tournament SET venue_mode=?, venue_id=?, venue_flat_cents=?, venue_entry_pct=?,
                             venue_bracket_pct=? WHERE id=?""",
                          (venue_mode, pick_venue(conn, venue_id), cut.flat, str(cut.entry_pct), str(cut.bracket_pct),
@@ -560,6 +564,7 @@ def square_pull(tournament_id: str):
         try:
             with db.session() as conn:
                 square.pull_tournament(conn, client, tournament_id)
+                square.lock_clear_tournaments(conn)
         finally:
             client.close()
     except SquareConfigError as e:
@@ -585,15 +590,45 @@ def series_square_pull(series_id: int):
 # --- bank reconciliation ---------------------------------------------------
 
 @app.get("/bank")
-def bank_page(request: Request):
-    today = datetime.now(ZoneInfo(config.TIMEZONE)).date()
+def bank_page(request: Request, on: str = ""):
+    today = bank.today()
+    try:
+        day = parse_date(on) if on else today
+    except RuleError:
+        day = today
     with db.session() as conn:
-        deposits = [bank.summary(conn, d, today.isoformat()) for d in conn.execute(
-            "SELECT * FROM bank_deposit ORDER BY deposited_on DESC, id DESC").fetchall()]
-        waiting = bank.unbanked(conn, today.isoformat())
-    return render(request, "bank.html", deposits=deposits, waiting=waiting, overdue_days=bank.OVERDUE_DAYS,
-                  today=today.isoformat(), import_since=(today - timedelta(days=30)).isoformat(),
+        last = bank.latest(conn)
+        expected = bank.expected(conn, day)
+        history = bank.history(conn)
+        deposits = conn.execute("""SELECT d.*, r.reconciled_on FROM bank_deposit d
+                                   LEFT JOIN reconciliation r ON r.id=d.reconciliation_id
+                                   ORDER BY d.deposited_on DESC, d.id DESC LIMIT 60""").fetchall()
+        later = sum(1 for _ in conn.execute("SELECT 1 FROM bank_deposit WHERE reconciliation_id IS NULL AND deposited_on > ?",
+                                            (day,)))
+    return render(request, "bank.html", last=last, day=day, x=expected, history=history, deposits=deposits,
+                  later=later, today=today, import_since=(date.fromisoformat(today) - timedelta(days=30)).isoformat(),
                   square_setup=square_setup(), payouts_status=square.status.get("payouts"))
+
+
+@app.post("/bank/reconcile")
+def bank_reconcile(reconciled_on: str = Form(...), balance: str = Form(...), note: str = Form("")):
+    try:
+        with db.session() as conn:
+            bank.reconcile(conn, parse_date(reconciled_on), dollars_to_cents(balance), note)
+            square.lock_clear_tournaments(conn)
+    except RuleError as e:
+        return back(f"/bank?on={quote(reconciled_on)}", str(e))
+    return back("/bank")
+
+
+@app.post("/bank/reconcile/undo")
+def bank_undo():
+    try:
+        with db.session() as conn:
+            bank.undo_latest(conn)
+    except RuleError as e:
+        return back("/bank", str(e))
+    return back("/bank")
 
 
 @app.post("/bank/square/pull")
@@ -609,14 +644,6 @@ def import_square_payouts(since: str = Form(...)):
     if not square.start_payouts_pull(lambda: HttpSquareClient(), day):
         return back("/bank", "A Square pull is already running; try again when it finishes")
     return back("/bank")
-
-
-@app.post("/bank/{deposit_id}/seen")
-def deposit_seen(deposit_id: int, seen: str = Form("")):
-    with db.session() as conn:
-        one(conn, "SELECT id FROM bank_deposit WHERE id=?", deposit_id)
-        bank.set_seen(conn, deposit_id, bool(seen))
-    return back(f"/bank/{deposit_id}")
 
 
 def _deposit_form(conn, deposit_id, deposited_on, amount, reference, note) -> int:
@@ -636,9 +663,10 @@ def add_deposit(deposited_on: str = Form(...), amount: str = Form(...), referenc
 @app.get("/bank/{deposit_id}")
 def deposit_page(request: Request, deposit_id: int):
     with db.session() as conn:
-        d = one(conn, "SELECT * FROM bank_deposit WHERE id=?", deposit_id)
-        info, options = bank.summary(conn, d), bank.candidates(conn, d)
-    return render(request, "deposit.html", x=info, options=options, lookback=bank.LOOKBACK_DAYS)
+        d = one(conn, """SELECT d.*, r.reconciled_on FROM bank_deposit d
+                         LEFT JOIN reconciliation r ON r.id=d.reconciliation_id WHERE d.id=?""", deposit_id)
+        info = bank.summary(conn, d)
+    return render(request, "deposit.html", x=info)
 
 
 @app.post("/bank/{deposit_id}")
@@ -647,7 +675,7 @@ def update_deposit(deposit_id: int, deposited_on: str = Form(...), amount: str =
     try:
         with db.session() as conn:
             d = one(conn, "SELECT * FROM bank_deposit WHERE id=?", deposit_id)
-            if d["square_payout_id"]:  # date and amount are Square's; only the reference and note are ours
+            if d["square_payout_id"] or d["reconciliation_id"]:  # Square's, or locked: only the reference and note
                 conn.execute("UPDATE bank_deposit SET reference=?, note=? WHERE id=?",
                              (reference.strip(), note.strip(), deposit_id))
             else:
@@ -660,25 +688,11 @@ def update_deposit(deposit_id: int, deposited_on: str = Form(...), amount: str =
 @app.post("/bank/{deposit_id}/delete")
 def delete_deposit(deposit_id: int):
     with db.session() as conn:
-        one(conn, "SELECT id FROM bank_deposit WHERE id=?", deposit_id)
-        conn.execute("DELETE FROM bank_deposit WHERE id=?", (deposit_id,))  # its payments become unbanked again
+        d = one(conn, "SELECT * FROM bank_deposit WHERE id=?", deposit_id)
+        if d["reconciliation_id"]:
+            return back(f"/bank/{deposit_id}", bank.locked_message(conn, d["reconciliation_id"]))
+        conn.execute("DELETE FROM bank_deposit WHERE id=?", (deposit_id,))
     return back("/bank")
-
-
-@app.post("/bank/{deposit_id}/payments")
-def match_payments(deposit_id: int, payment_id: list[str] = Form([])):
-    with db.session() as conn:
-        one(conn, "SELECT id FROM bank_deposit WHERE id=?", deposit_id)
-        bank.match(conn, deposit_id, payment_id)
-    return back(f"/bank/{deposit_id}")
-
-
-@app.post("/bank/{deposit_id}/payments/{payment_id}/remove")
-def unmatch_payment(deposit_id: int, payment_id: str):
-    with db.session() as conn:
-        one(conn, "SELECT id FROM bank_deposit WHERE id=?", deposit_id)
-        bank.unmatch(conn, deposit_id, payment_id)
-    return back(f"/bank/{deposit_id}")
 
 
 @app.post("/square-payments/{payment_id}/link")
@@ -687,6 +701,7 @@ def square_link(payment_id: str, player_id: str = Form("")):
         with db.session() as conn:
             p = one(conn, "SELECT * FROM square_payment WHERE id=?", payment_id)
             square.link_payment(conn, payment_id, player_id.strip() or None)
+            square.lock_clear_tournaments(conn)
     except RuleError as e:
         return back(f"/tournaments/{p['tournament_id']}", str(e))
     return back(f"/tournaments/{p['tournament_id']}#square")
@@ -694,9 +709,14 @@ def square_link(payment_id: str, player_id: str = Form("")):
 
 @app.post("/square-payments/{payment_id}/ignore")
 def square_ignore(payment_id: str):
-    with db.session() as conn:
-        p = one(conn, "SELECT * FROM square_payment WHERE id=?", payment_id)
-        conn.execute("UPDATE square_payment SET ignored = 1 - ignored WHERE id=?", (payment_id,))
+    try:
+        with db.session() as conn:
+            p = one(conn, "SELECT * FROM square_payment WHERE id=?", payment_id)
+            square.check_unlocked(conn, p["tournament_id"])
+            conn.execute("UPDATE square_payment SET ignored = 1 - ignored WHERE id=?", (payment_id,))
+            square.lock_clear_tournaments(conn)
+    except RuleError as e:
+        return back(f"/tournaments/{p['tournament_id']}", str(e))
     return back(f"/tournaments/{p['tournament_id']}#square")
 
 
@@ -709,6 +729,7 @@ def resolve_entrant(tournament_id: str, player_id: str, note: str = Form(""), un
                 square.unresolve_entrant(conn, tournament_id, player_id)
             else:
                 square.resolve_entrant(conn, tournament_id, player_id, note)
+            square.lock_clear_tournaments(conn)
     except RuleError as e:
         return back(f"/tournaments/{tournament_id}", str(e))
     return back(f"/tournaments/{tournament_id}#paid")
@@ -767,10 +788,11 @@ def delete_rule(rule_id: int):
 def tournament_page(request: Request, tournament_id: str):
     with db.session() as conn:
         t = one(conn, """SELECT t.*, s.name AS series_name, s.code AS series_code, p.entry_fee_cents AS series_fee,
-                                p.starts_on AS period_start, p.venue_id AS series_venue_id, v.name AS series_venue
+                                p.starts_on AS period_start, p.venue_id AS series_venue_id, v.name AS series_venue,
+                                r.reconciled_on AS locked_on
                          FROM tournament t LEFT JOIN series s ON s.id=t.series_id
                          LEFT JOIN series_period p ON p.id=t.period_id LEFT JOIN venue v ON v.id=p.venue_id
-                         WHERE t.id=?""", tournament_id)
+                         LEFT JOIN reconciliation r ON r.id=t.locked_by WHERE t.id=?""", tournament_id)
         flagged = {i["id"]: i["reason"] for i in sync.event_issues(conn, tournament_id=tournament_id)}
         events = []
         for e in conn.execute(f"SELECT e.*, {EVENT_SUMS} FROM event e WHERE e.tournament_id=? ORDER BY e.name",
@@ -1018,6 +1040,8 @@ def unmerge_player(player_id: str):
 def mark_paid(payout_id: int, note: str = Form(""), undo: str = Form(""), next: str = Form("")):
     with db.session() as conn:
         po = one(conn, "SELECT * FROM payout WHERE id=?", payout_id)
+        if undo and po["reconciliation_id"]:
+            return back(safe_next(next, f"/players/{po['player_id']}"), bank.locked_message(conn, po["reconciliation_id"]))
         if undo:
             conn.execute("UPDATE payout SET status='owed', paid_at=NULL, amount_cents=computed_cents WHERE id=?",
                          (payout_id,))
@@ -1141,7 +1165,9 @@ def venue_page(request: Request, status: str = "", series: int | None = None, ve
 @app.post("/venue/{tournament_id}/paid")
 def venue_mark_paid(tournament_id: str, note: str = Form(""), undo: str = Form(""), next: str = Form("")):
     with db.session() as conn:
-        one(conn, "SELECT tournament_id FROM venue_payment WHERE tournament_id=?", tournament_id)
+        vp = one(conn, "SELECT * FROM venue_payment WHERE tournament_id=?", tournament_id)
+        if undo and vp["reconciliation_id"]:
+            return back(safe_next(next, f"/tournaments/{tournament_id}"), bank.locked_message(conn, vp["reconciliation_id"]))
         if undo:
             conn.execute("""UPDATE venue_payment SET status='owed', paid_at=NULL, amount_cents=computed_cents
                             WHERE tournament_id=?""", (tournament_id,))

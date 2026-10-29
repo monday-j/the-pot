@@ -3,29 +3,42 @@
 {% block body %}
 <h1>Bank</h1>
 {% if payouts_status %}<div class="strip {{ 'err' if payouts_status.state == 'error' }}">Square payouts{{ " (automatic)" if payouts_status.auto }}, {{ payouts_status.at|localtime }}: {{ payouts_status.message }}</div>{% endif %}
-<div class="summary"><span><b>{{ deposits|length }}</b> deposits</span><span><b>{{ deposits|sum(attribute="d.amount_cents")|money }}</b> deposited</span>
-<span><b class="{{ 'bad' if deposits|selectattr('difference')|list }}">{{ deposits|selectattr("difference")|list|length }}</b> that don't add up</span>
-<span><b class="{{ 'bad' if deposits|selectattr('flag')|list }}">{{ deposits|selectattr("flag")|list|length }}</b> Square payouts failed or not seen in the bank</span>
-<span><b class="warn">{{ waiting|sum(attribute="net")|money }}</b> net from Square not in the bank yet</span></div>
+<div class="summary">{% if last %}<span>Reconciled to <b>{{ last.reconciled_on }}</b></span><span><b>{{ last.balance_cents|money }}</b> in the bank then</span>{% else %}<span class="mut">Not reconciled yet: the first reconciliation sets the opening balance.</span>{% endif %}
+<span><b>{{ x.in|money }}</b> in</span><span><b>{{ x.out|money }}</b> out</span>{% if x.expected is not none %}<span><b>{{ x.expected|money }}</b> expected on {{ day }}</span>{% endif %}</div>
+<h2>Reconcile</h2>
+<form method="get" action="/bank" class="toolbar"><label>Balance on<input type="date" name="on" value="{{ day }}" max="{{ today }}" required></label><button class="sec">Show what's expected</button>
+<span class="mut">Counts deposits and payments out up to this day{% if last %} since {{ last.reconciled_on }}{% endif %}.</span></form>
+<form method="post" action="/bank/reconcile" class="toolbar"><input type="hidden" name="reconciled_on" value="{{ day }}">
+<label>Bank balance at the end of {{ day }} $<input name="balance" size="10" required></label>
+<label>Note (say why, if it doesn't match)<input name="note" size="30"></label><button>Reconcile and lock {{ day }}</button>
+<span class="mut">{% if x.expected is none %}The opening balance: nothing to compare yet.{% else %}Expected {{ x.expected|money }}; a different balance is recorded with its difference.{% endif %}</span></form>
+<p class="help">Reconciling locks everything dated on or before the day: deposits, payments to players and venues, and every tournament up to then that has no issues left (the rest lock as soon as they're sorted out). Locked tournaments are no longer re-imported or recomputed. Undo the latest reconciliation to change anything it locked.</p>
+<h2>Not reconciled yet, up to {{ day }} <span class="n">· {{ x.deposits|length + x.players|length + x.venues|length }}</span></h2>
+<table class="sortable"><thead><tr><th>Date</th><th>What</th><th>Who</th><th class="r">In</th><th class="r">Out</th><th>Note</th></tr></thead><tbody>
+{% for d in x.deposits %}<tr><td>{{ d.deposited_on }}</td><td><a href="/bank/{{ d.id }}">{{ "Square payout" if d.square_payout_id else "Deposit" }}</a>{% if d.reference and d.reference != "Square payout" %} <span class="mut">{{ d.reference }}</span>{% endif %}</td><td></td>{{ m.mtd(d.amount_cents) }}<td></td><td class="mut">{{ d.note }}</td></tr>{% endfor %}
+{% for r in x.players %}<tr><td>{{ r.day }}</td><td>Payout · {{ m.tournament(r.tournament_id, r.tname) }} {{ r.ename }}</td><td>{{ m.player(r.player_id, r.gamer_tag) }}</td><td></td>{{ m.mtd(r.amount_cents) }}<td class="mut">{{ r.note }}</td></tr>{% endfor %}
+{% for r in x.venues %}<tr><td>{{ r.day }}</td><td>Venue · {{ m.tournament(r.tournament_id, r.tname) }}</td><td>{% if r.venue_id %}{{ m.venue(r.venue_id, r.venue_name) }}{% else %}{{ r.venue_name }}{% endif %}</td><td></td>{{ m.mtd(r.amount_cents) }}<td class="mut">{{ r.note }}</td></tr>{% endfor %}
+{% if not (x.deposits or x.players or x.venues) %}<tr><td colspan="6" class="mut">Nothing in or out{% if last %} since {{ last.reconciled_on }}{% endif %}.</td></tr>{% endif %}</tbody></table>
+{% if later %}<p class="help">{{ later }} deposit{{ "s" if later != 1 }} after {{ day }} not shown.</p>{% endif %}
+<h2>Reconciliations <span class="n">· {{ history|length }}</span></h2>
+<table><thead><tr><th>Date</th><th class="r">Expected</th><th class="r">Bank balance</th><th class="r">Difference</th><th class="r">Locked</th><th>Note</th><th></th></tr></thead><tbody>
+{% for r in history %}<tr><td>{{ r.reconciled_on }}</td>{{ m.mtd(r.expected_cents) }}{{ m.mtd(r.balance_cents) }}<td class="r {{ 'ok' if r.difference == 0 else 'bad' }}">{{ r.difference|money }}</td>
+<td class="r">{{ r.deposits }} deposits, {{ r.paid_out }} paid out, {{ r.tournaments }} tournaments</td><td class="mut">{{ r.note }}{% if loop.last %} (opening balance){% endif %}</td>
+<td>{% if loop.first %}<form class="inline" method="post" action="/bank/reconcile/undo"><button class="sec">Undo</button></form>{% endif %}</td></tr>
+{% else %}<tr><td colspan="7" class="mut">No reconciliations yet.</td></tr>{% endfor %}</tbody></table>
+<h2>Deposits</h2>
 <form method="post" action="/bank/square/pull" class="toolbar">
 <label>Square payouts sent since<input type="date" name="since" value="{{ import_since }}" required></label>
 <button class="sec" {{ "disabled" if not square_setup.env }} title="{{ square_setup.error or ('Square: ' ~ square_setup.env if square_setup.env else 'Square is not set up (see README)') }}">Import payouts from Square</button>
-<span class="mut">Imported payouts come with the payments they covered; tick each one off when it shows on your statement.</span></form>
+<span class="mut">Each comes with Square's breakdown of the payments, refunds and fees it covered.</span></form>
 <form method="post" action="/bank" class="toolbar">
 <label>Deposited on<input type="date" name="deposited_on" value="{{ today }}" required></label>
 <label>Amount $<input name="amount" size="9" required></label>
 <label>Reference (as on the statement)<input name="reference" size="24"></label>
-<label>Note<input name="note" size="24"></label><button>Add deposit by hand</button></form>
-<h2>Deposits <span class="n">· {{ deposits|length }}</span></h2>
-<table class="sortable"><thead><tr><th>Date</th><th>Reference</th><th>From</th><th>In bank</th><th class="r">Deposited</th><th class="r">Payments</th><th class="r">Matched net</th><th class="r">Difference</th><th>Note</th></tr></thead><tbody>
-{% for x in deposits %}<tr><td><a href="/bank/{{ x.d.id }}">{{ x.d.deposited_on }}</a></td><td>{{ x.d.reference }}</td><td>{% if x.imported %}Square payout <span class="tag">{{ x.d.payout_status|lower }}</span>{% else %}<span class="mut">by hand</span>{% endif %}</td>
-<td>{% if x.flag %}<span class="bad">{{ x.flag }}</span>{% elif x.d.seen_in_bank %}<span class="ok">seen</span>{% else %}<span class="mut">expected</span>{% endif %}</td>{{ m.mtd(x.d.amount_cents) }}<td class="r">{{ x.entries|length if x.imported else x.payments|length }}</td>{{ m.mtd(x.matched) }}
-<td class="r {{ 'ok' if x.difference == 0 else 'bad' }}" data-v="{{ x.difference }}">{{ x.difference|money }}{% if x.fees_pending %} <span class="warn" title="Some matched payments have no Square fee yet">fees pending</span>{% endif %}</td><td class="mut">{{ x.d.note }}</td></tr>
-{% else %}<tr><td colspan="9" class="mut">No deposits recorded yet. Import Square's payouts, or add one from your bank statement, above.</td></tr>{% endfor %}</tbody></table>
-<h2>Not in the bank yet <span class="n">· {{ waiting|sum(attribute="count") }} payments</span></h2>
-<table class="sortable"><thead><tr><th>Day taken</th><th>Tournaments</th><th class="r">Payments</th><th class="r">Gross</th><th class="r">Fees</th><th class="r">Net</th><th></th></tr></thead><tbody>
-{% for d in waiting %}<tr><td>{{ d.day }}</td><td>{% for tid, name in d.tournaments %}{{ m.tournament(tid, name) }}{{ ", " if not loop.last }}{% endfor %}</td><td class="r">{{ d.count }}</td>{{ m.mtd(d.gross) }}{{ m.mtd(d.fees) }}{{ m.mtd(d.net) }}
-<td>{% if d.overdue %}<span class="bad">over {{ overdue_days }} days</span>{% endif %}{% if d.pending %} <span class="warn">{{ d.pending }} fee{{ "s" if d.pending != 1 }} pending</span>{% endif %}</td></tr>
-{% else %}<tr><td colspan="7" class="mut">Every Square payment is matched to a deposit.</td></tr>{% endfor %}</tbody></table>
-<p class="help">Square pays takings out net of its fees, usually one deposit per business day. Import those payouts from Square (they come matched to the payments they covered) and tick each one as seen when it shows on your bank statement; or record a deposit by hand from the statement, then tick the payments it covers. Every pulled Square payment counts here, ignored ones included, since Square deposits those too. Payments that were never pulled (outside tournament times) aren't listed, so a deposit that includes them won't add up.</p>
+<label>Note<input name="note" size="24"></label><button class="sec">Add deposit by hand</button></form>
+<table class="sortable"><thead><tr><th>Date</th><th>Reference</th><th>From</th><th class="r">Amount</th><th>Reconciled</th><th>Note</th></tr></thead><tbody>
+{% for d in deposits %}<tr><td><a href="/bank/{{ d.id }}">{{ d.deposited_on }}</a></td><td>{{ d.reference }}</td><td>{% if d.square_payout_id %}Square payout <span class="tag {{ 'bad' if d.payout_status == 'FAILED' }}">{{ d.payout_status|lower }}</span>{% else %}<span class="mut">by hand</span>{% endif %}</td>
+{{ m.mtd(d.amount_cents) }}<td>{% if d.reconciled_on %}<span class="ok">{{ d.reconciled_on }}</span>{% else %}<span class="mut">not yet</span>{% endif %}</td><td class="mut">{{ d.note }}</td></tr>
+{% else %}<tr><td colspan="6" class="mut">No deposits recorded yet. Import Square's payouts, or add one from your bank statement, above.</td></tr>{% endfor %}</tbody></table>
+<p class="help">Money in is Square's payouts (net of its fees, usually one per business day) and any deposits added by hand; failed payouts don't count. Money out is the payouts to players and venues marked paid, on the day they were marked. Cash, and other money through the account, isn't tracked: note it against the reconciliation's difference.</p>
 {% endblock %}

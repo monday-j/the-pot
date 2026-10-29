@@ -1,6 +1,6 @@
 import threading
 from contextlib import asynccontextmanager
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from urllib.parse import quote, urlencode
@@ -499,12 +499,37 @@ def series_square_pull(series_id: int):
 
 @app.get("/bank")
 def bank_page(request: Request):
+    today = datetime.now(ZoneInfo(config.TIMEZONE)).date()
     with db.session() as conn:
-        deposits = [bank.summary(conn, d) for d in conn.execute(
+        deposits = [bank.summary(conn, d, today.isoformat()) for d in conn.execute(
             "SELECT * FROM bank_deposit ORDER BY deposited_on DESC, id DESC").fetchall()]
-        waiting = bank.unbanked(conn)
+        waiting = bank.unbanked(conn, today.isoformat())
     return render(request, "bank.html", deposits=deposits, waiting=waiting, overdue_days=bank.OVERDUE_DAYS,
-                  today=datetime.now(ZoneInfo(config.TIMEZONE)).date().isoformat())
+                  today=today.isoformat(), import_since=(today - timedelta(days=30)).isoformat(),
+                  square_setup=square_setup(), payouts_status=square.status.get("payouts"))
+
+
+@app.post("/bank/square/pull")
+def import_square_payouts(since: str = Form(...)):
+    """Import Square payouts sent since a date, in the background."""
+    try:
+        day = parse_date(since)
+    except RuleError as e:
+        return back("/bank", str(e))
+    setup = square_setup()
+    if not setup["env"]:
+        return back("/bank", setup["error"] or "No Square API key configured (SQUARE_API_KEY)")
+    if not square.start_payouts_pull(lambda: HttpSquareClient(), day):
+        return back("/bank", "A Square pull is already running; try again when it finishes")
+    return back("/bank")
+
+
+@app.post("/bank/{deposit_id}/seen")
+def deposit_seen(deposit_id: int, seen: str = Form("")):
+    with db.session() as conn:
+        one(conn, "SELECT id FROM bank_deposit WHERE id=?", deposit_id)
+        bank.set_seen(conn, deposit_id, bool(seen))
+    return back(f"/bank/{deposit_id}")
 
 
 def _deposit_form(conn, deposit_id, deposited_on, amount, reference, note) -> int:
@@ -534,8 +559,12 @@ def update_deposit(deposit_id: int, deposited_on: str = Form(...), amount: str =
                    note: str = Form("")):
     try:
         with db.session() as conn:
-            one(conn, "SELECT id FROM bank_deposit WHERE id=?", deposit_id)
-            _deposit_form(conn, deposit_id, deposited_on, amount, reference, note)
+            d = one(conn, "SELECT * FROM bank_deposit WHERE id=?", deposit_id)
+            if d["square_payout_id"]:  # date and amount are Square's; only the reference and note are ours
+                conn.execute("UPDATE bank_deposit SET reference=?, note=? WHERE id=?",
+                             (reference.strip(), note.strip(), deposit_id))
+            else:
+                _deposit_form(conn, deposit_id, deposited_on, amount, reference, note)
     except RuleError as e:
         return back(f"/bank/{deposit_id}", str(e))
     return back(f"/bank/{deposit_id}")

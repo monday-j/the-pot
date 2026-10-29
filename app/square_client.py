@@ -5,6 +5,8 @@ import time
 from dataclasses import dataclass
 from typing import Protocol
 
+from urllib.parse import quote
+
 import httpx
 
 from . import config
@@ -38,8 +40,34 @@ class SquarePayment:
     fee_cents: int | None = None  # processing fees Square kept; None until Square adds them
 
 
+@dataclass
+class SquarePayout:
+    """Money Square sent to the bank (status SENT, then PAID; FAILED if the bank bounced it)."""
+    id: str
+    status: str
+    amount_cents: int
+    created_at: str
+    arrival_date: str = ""
+    version: int = 0
+    location_id: str = ""
+
+
+@dataclass
+class SquarePayoutEntry:
+    """One line of a payout: a CHARGE (a payment), REFUND, FEE, etc. net_cents is what it added to the payout."""
+    id: str
+    type: str
+    payment_id: str = ""
+    gross_cents: int = 0
+    fee_cents: int = 0
+    net_cents: int = 0
+    effective_at: str = ""
+
+
 class SquareClient(Protocol):
     def list_payments(self, begin_time: str, end_time: str, location_id: str = "") -> list[SquarePayment]: ...
+    def list_payouts(self, begin_time: str, end_time: str, location_id: str = "") -> list[SquarePayout]: ...
+    def list_payout_entries(self, payout_id: str) -> list[SquarePayoutEntry]: ...
 
 
 class SquareConfigError(RuntimeError):
@@ -74,6 +102,24 @@ def parse_payment(p: dict) -> SquarePayment:
         fingerprint=card.get("fingerprint", ""), cardholder_name=card.get("cardholder_name", ""),
         note=p.get("note", ""), receipt_url=p.get("receipt_url", ""), location_id=p.get("location_id", ""),
         fee_cents=sum((f.get("amount_money") or {}).get("amount", 0) for f in fees) if fees else None)
+
+
+def _cents(money) -> int:
+    return (money or {}).get("amount", 0)
+
+
+def parse_payout(p: dict) -> SquarePayout:
+    return SquarePayout(id=p["id"], status=p.get("status", ""), amount_cents=_cents(p.get("amount_money")),
+                        created_at=p.get("created_at", ""), arrival_date=p.get("arrival_date", ""),
+                        version=p.get("version", 0), location_id=p.get("location_id", ""))
+
+
+def parse_payout_entry(e: dict) -> SquarePayoutEntry:
+    # the payment an entry is about sits in its type-specific details (type_charge_details, type_refund_details, ...)
+    details = next((v for k, v in e.items() if k.startswith("type_") and isinstance(v, dict)), {})
+    return SquarePayoutEntry(id=e["id"], type=e.get("type", ""), payment_id=details.get("payment_id", ""),
+                             gross_cents=_cents(e.get("gross_amount_money")), fee_cents=_cents(e.get("fee_amount_money")),
+                             net_cents=_cents(e.get("net_amount_money")), effective_at=e.get("effective_at", ""))
 
 
 class HttpSquareClient:
@@ -131,21 +177,38 @@ class HttpSquareClient:
             self._sleep(self._backoff(attempt, r.headers.get("retry-after")))
         raise AssertionError("unreachable")
 
-    def list_payments(self, begin_time: str, end_time: str, location_id: str = "") -> list[SquarePayment]:
-        params = {"begin_time": begin_time, "end_time": end_time, "sort_order": "ASC", "limit": 100}
-        if location_id:
-            params["location_id"] = location_id
+    def _list(self, path: str, key: str, params: dict, permission: str) -> list[dict]:
+        """Every item of a paged list endpoint."""
+        params = {**params, "limit": 100}
         out = []
         while True:
-            r = self._get("/v2/payments", params)
+            r = self._get(path, params)
             if r.status_code != 200:  # Square's error detail, never the request headers
                 detail = "; ".join(e.get("detail", e.get("code", "")) for e in r.json().get("errors", [])) \
                     if r.headers.get("content-type", "").startswith("application/json") else r.reason_phrase
-                hint = (f" Check that SQUARE_API_KEY is a {self.env} access token, or set SQUARE_ENV to match it."
-                        if r.status_code == 401 else "")
+                hint = {401: f" Check that SQUARE_API_KEY is a {self.env} access token, or set SQUARE_ENV to match it.",
+                        403: f" The SQUARE_API_KEY token needs the {permission} permission for this."}.get(r.status_code, "")
                 raise RuntimeError(f"Square ({self.env}) returned {r.status_code}: {detail.rstrip('.')}.{hint}")
             body = r.json()
-            out += [parse_payment(p) for p in body.get("payments", [])]
+            out += body.get(key, [])
             if not body.get("cursor"):
                 return out
             params["cursor"] = body["cursor"]
+
+    @staticmethod
+    def _range(begin_time: str, end_time: str, location_id: str) -> dict:
+        params = {"begin_time": begin_time, "end_time": end_time, "sort_order": "ASC"}
+        return {**params, "location_id": location_id} if location_id else params
+
+    def list_payments(self, begin_time: str, end_time: str, location_id: str = "") -> list[SquarePayment]:
+        return [parse_payment(p) for p in self._list("/v2/payments", "payments",
+                                                     self._range(begin_time, end_time, location_id), "PAYMENTS_READ")]
+
+    def list_payouts(self, begin_time: str, end_time: str, location_id: str = "") -> list[SquarePayout]:
+        """Payouts created in the range (Square filters on when the payout was sent, not its arrival date)."""
+        return [parse_payout(p) for p in self._list("/v2/payouts", "payouts",
+                                                    self._range(begin_time, end_time, location_id), "PAYOUTS_READ")]
+
+    def list_payout_entries(self, payout_id: str) -> list[SquarePayoutEntry]:
+        return [parse_payout_entry(e) for e in self._list(f"/v2/payouts/{quote(payout_id, safe='')}/payout-entries", "payout_entries",
+                                                          {"sort_order": "ASC"}, "PAYOUTS_READ")]

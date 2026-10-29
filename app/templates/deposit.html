@@ -1,28 +1,38 @@
 {% extends "base.html" %}{% import "_macros.html" as m %}
 {% block crumbs %}<div class="crumbs"><a href="/bank">Bank</a><span>{{ x.d.deposited_on }}</span></div>{% endblock %}
 {% block body %}
-<h1>Deposit {{ x.d.deposited_on }}{% if x.d.reference %} <span class="tag">{{ x.d.reference }}</span>{% endif %}</h1>
-<div class="summary"><span><b>{{ x.d.amount_cents|money }}</b> deposited</span><span><b>{{ x.matched|money }}</b> net of {{ x.payments|length }} matched payments</span>
+<h1>Deposit {{ x.d.deposited_on }}{% if x.d.reference %} <span class="tag">{{ x.d.reference }}</span>{% endif %}{% if x.imported %} <span class="tag">Square payout · {{ x.d.payout_status|lower }}</span>{% endif %}</h1>
+{% if x.flag %}<div class="strip err">{{ x.flag|capitalize }}{% if x.flag == "payout failed" %}: Square says your bank rejected this payout. Check your bank details in Square.{% else %}: it was due over a few days ago. Check your statement.{% endif %}</div>{% endif %}
+{% if x.imported %}<form method="post" action="/bank/{{ x.d.id }}/seen" class="toolbar">{% if x.d.seen_in_bank %}<span class="ok">Seen in the bank.</span><button class="sec">Not seen after all</button>{% else %}<input type="hidden" name="seen" value="1"><span class="mut">Expected: tick when it shows on your statement.</span><button>Seen in bank</button>{% endif %}</form>{% endif %}
+<div class="summary"><span><b>{{ x.d.amount_cents|money }}</b> deposited</span>{% if x.imported %}<span><b>{{ x.tournament.net|money }}</b> tournament payments ({{ x.tournament.count }})</span><span><b>{{ x.other.net|money }}</b> other Square takings ({{ x.other.count }})</span><span><b>{{ x.adjustment.net|money }}</b> refunds, fees and adjustments ({{ x.adjustment.count }})</span>
+{% else %}<span><b>{{ x.matched|money }}</b> net of {{ x.payments|length }} matched payments</span>{% endif %}
 <span><b class="{{ 'ok' if x.difference == 0 else 'bad' }}">{{ x.difference|money }}</b> {{ "adds up" if x.difference == 0 else "difference" }}</span>
 {% if x.fees_pending %}<span class="warn">{{ x.fees_pending }} matched payment{{ "s" if x.fees_pending != 1 }} without a Square fee yet: pull again</span>{% endif %}</div>
-<h2>Matched payments <span class="n">· {{ x.payments|length }}</span></h2>
+{% if x.imported %}<h2>What Square paid out <span class="n">· {{ x.entries|length }} entries</span></h2>
+<table class="sortable"><thead><tr><th>When</th><th>Entry</th><th>Tournament</th><th>Player</th><th class="r">Gross</th><th class="r">Fee</th><th class="r">Net</th></tr></thead><tbody>
+{% for e in x.entries %}<tr><td>{{ e.effective_at|localtime }}</td><td>{{ e.type|lower|replace("_", " ") }}{% if e.group == "other" %} <span class="tag" title="A payment the app never pulled, e.g. outside tournament times">other Square takings</span>{% endif %}{% if e.tournament_id and e.paid_out_by and e.paid_out_by != x.d.id %} <span class="warn" title="Matched by hand to another deposit">matched elsewhere</span>{% endif %}</td>
+<td>{% if e.tournament_id %}{{ m.tournament(e.tournament_id, e.tname) }}{% else %}<span class="mut">·</span>{% endif %}</td><td>{% if e.player_id %}{{ m.player(e.player_id, e.gamer_tag) }}{% else %}<span class="mut">·</span>{% endif %}</td>
+{{ m.mtd(e.gross_cents) }}{{ m.mtd(e.fee_cents) }}{{ m.mtd(e.net_cents) }}</tr>
+{% else %}<tr><td colspan="7" class="mut">Square listed no entries for this payout.</td></tr>{% endfor %}</tbody></table>
+{% else %}<h2>Matched payments <span class="n">· {{ x.payments|length }}</span></h2>
 <table class="sortable"><thead><tr><th>Taken</th><th>Tournament</th><th>Player</th><th class="r">Amount</th><th class="r">Fee</th><th class="r">Net</th><th></th></tr></thead><tbody>
 {% for p in x.payments %}<tr{% if p.ignored %} class="mut"{% endif %}><td>{{ p.created_at|localtime }}</td><td>{{ m.tournament(p.tournament_id, p.tname) }}</td><td>{% if p.player_id %}{{ m.player(p.player_id, p.gamer_tag) }}{% else %}<span class="mut">{{ p.note or "·" }}</span>{% endif %}</td>
 {{ m.mtd(p.amount_cents) }}<td class="r">{% if p.fee_cents is none %}<span class="mut">pending</span>{% else %}{{ p.fee_cents|money }}{% endif %}</td>{{ m.mtd(p.net) }}
 <td><form class="inline" method="post" action="/bank/{{ x.d.id }}/payments/{{ p.id|urlq }}/remove"><button class="sec">Remove</button></form></td></tr>
-{% else %}<tr><td colspan="7" class="mut">No payments matched yet: tick them below.</td></tr>{% endfor %}</tbody></table>
-<h2>Add payments <span class="n">· unbanked, from the {{ lookback }} days before</span></h2>
+{% else %}<tr><td colspan="7" class="mut">No payments matched yet: tick them below.</td></tr>{% endfor %}</tbody></table>{% endif %}
+{% if not x.imported %}<h2>Add payments <span class="n">· unbanked, from the {{ lookback }} days before</span></h2>
 {% if options %}<form method="post" action="/bank/{{ x.d.id }}/payments">
 <table class="sortable"><thead><tr><th></th><th>Taken</th><th>Tournament</th><th>Player</th><th class="r">Amount</th><th class="r">Fee</th><th class="r">Net</th></tr></thead><tbody>
 {% for p in options %}<tr{% if p.ignored %} class="mut"{% endif %}><td><input type="checkbox" name="payment_id" value="{{ p.id }}" {{ "checked" if p.suggested }}></td><td>{{ p.created_at|localtime }}</td><td>{{ m.tournament(p.tournament_id, p.tname) }}</td>
 <td>{% if p.player_id %}{{ m.player(p.player_id, p.gamer_tag) }}{% else %}<span class="mut">{{ p.note or "·" }}</span>{% endif %}</td>{{ m.mtd(p.amount_cents) }}<td class="r">{% if p.fee_cents is none %}<span class="mut">pending</span>{% else %}{{ p.fee_cents|money }}{% endif %}</td>{{ m.mtd(p.net) }}</tr>{% endfor %}</tbody></table>
 <div class="toolbar"><button>Add ticked payments</button><span class="mut">Ticked: whole days just before this deposit that fit in it.</span></div></form>
-{% else %}<p class="mut">No unbanked Square payments from the {{ lookback }} days before this deposit.</p>{% endif %}
+{% else %}<p class="mut">No unbanked Square payments from the {{ lookback }} days before this deposit.</p>{% endif %}{% endif %}
 <h2>Edit</h2>
 <form method="post" action="/bank/{{ x.d.id }}" class="toolbar">
+{% if x.imported %}<input type="hidden" name="deposited_on" value="{{ x.d.deposited_on }}"><input type="hidden" name="amount" value="{{ '%.2f' % (x.d.amount_cents / 100) }}">{% else %}
 <label>Deposited on<input type="date" name="deposited_on" value="{{ x.d.deposited_on }}" required></label>
-<label>Amount $<input name="amount" value="{{ '%.2f' % (x.d.amount_cents / 100) }}" size="9" required></label>
+<label>Amount $<input name="amount" value="{{ '%.2f' % (x.d.amount_cents / 100) }}" size="9" required></label>{% endif %}
 <label>Reference<input name="reference" value="{{ x.d.reference }}" size="24"></label>
 <label>Note<input name="note" value="{{ x.d.note }}" size="24"></label><button class="sec">Save</button></form>
-<form method="post" action="/bank/{{ x.d.id }}/delete" class="toolbar"><button class="sec">Delete deposit</button><span class="mut">Its payments go back to "not in the bank yet".</span></form>
+<form method="post" action="/bank/{{ x.d.id }}/delete" class="toolbar"><button class="sec">Delete deposit</button><span class="mut">Its payments go back to "not in the bank yet".{% if x.imported %} The next import brings it back.{% endif %}</span></form>
 {% endblock %}

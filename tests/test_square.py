@@ -23,6 +23,17 @@ class FakeSquare:
         self.calls.append((begin_time, end_time, location_id))
         return [p for p in self.payments if begin_time <= p.created_at[:19] + "Z" <= end_time]
 
+    payouts: list = []
+    entries: dict = {}
+
+    def list_payouts(self, begin_time, end_time, location_id=""):
+        self.calls.append(("payouts", begin_time, end_time, location_id))
+        return list(self.payouts)
+
+    def list_payout_entries(self, payout_id):
+        self.calls.append(("entries", payout_id))
+        return list(self.entries.get(payout_id, []))
+
     def close(self):
         pass
 
@@ -370,13 +381,15 @@ def test_automatic_pull_covers_recent_tournaments_of_tracked_series(fnb, monkeyp
     today = square.datetime.now(square.ZoneInfo(config.TIMEZONE)).date()
     fnb.execute("UPDATE tournament SET start_date=? WHERE id='t3'", ((today - square.timedelta(days=3)).isoformat(),))
     square.auto_pull_once(lambda: client)
-    assert len(client.calls) == 1 and client.calls[0][0].startswith((today - square.timedelta(days=3)).isoformat()[:8])
+    payment_calls = [c for c in client.calls if c[0] not in ("payouts", "entries")]
+    assert len(payment_calls) == 1 and payment_calls[0][0].startswith((today - square.timedelta(days=3)).isoformat()[:8])
+    assert any(c[0] == "payouts" for c in client.calls)  # then the payouts that paid them out
     assert square.status[1]["auto"] and square.status[1]["message"].endswith("across 1 tournaments")  # t1 is too old
 
     client.calls.clear()
     fnb.execute("UPDATE series SET tracked=0")
     square.auto_pull_once(lambda: client)
-    assert client.calls == []
+    assert [c for c in client.calls if c[0] not in ("payouts", "entries")] == []
 
 
 def test_auto_pull_hours_setting(monkeypatch):

@@ -119,14 +119,32 @@ CREATE TABLE IF NOT EXISTS venue_payment (
     paid_at TEXT,
     note TEXT NOT NULL DEFAULT ''
 );
--- Bank deposits recorded by hand from the bank statement; Square payments are matched to the deposit that paid them out.
+-- Bank deposits, recorded by hand from the bank statement or imported from Square's payouts (square_payout_id set);
+-- Square payments are matched to the deposit that paid them out. An imported payout is only "expected" until it's
+-- ticked as seen in the bank; manual deposits are typed from the statement, so they're seen already.
 CREATE TABLE IF NOT EXISTS bank_deposit (
     id INTEGER PRIMARY KEY,
     deposited_on TEXT NOT NULL,
     amount_cents INTEGER NOT NULL,
     reference TEXT NOT NULL DEFAULT '',
-    note TEXT NOT NULL DEFAULT ''
+    note TEXT NOT NULL DEFAULT '',
+    square_payout_id TEXT,
+    payout_status TEXT NOT NULL DEFAULT '',
+    payout_version INTEGER,
+    seen_in_bank INTEGER NOT NULL DEFAULT 1
 );
+-- What an imported payout covered, as Square itemises it: CHARGE (a payment), REFUND, FEE, etc.
+CREATE TABLE IF NOT EXISTS square_payout_entry (
+    id TEXT PRIMARY KEY,
+    deposit_id INTEGER NOT NULL REFERENCES bank_deposit(id) ON DELETE CASCADE,
+    type TEXT NOT NULL,
+    payment_id TEXT NOT NULL DEFAULT '',
+    effective_at TEXT NOT NULL DEFAULT '',
+    gross_cents INTEGER NOT NULL DEFAULT 0,
+    fee_cents INTEGER NOT NULL DEFAULT 0,
+    net_cents INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_payout_entry_payment ON square_payout_entry(payment_id);
 -- Payments pulled from Square for a tournament. player_id is set by hand ('manual') or from a card seen before ('auto').
 CREATE TABLE IF NOT EXISTS square_payment (
     id TEXT PRIMARY KEY,
@@ -159,6 +177,7 @@ VIEWS = """
 CREATE VIEW IF NOT EXISTS event_entry_c AS
     SELECT ee.event_id, COALESCE(p.merged_into, ee.player_id) AS player_id, MIN(ee.placement) AS placement
     FROM event_entry ee JOIN player p ON p.id=ee.player_id GROUP BY 1, 2;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_deposit_payout ON bank_deposit(square_payout_id) WHERE square_payout_id IS NOT NULL;
 CREATE VIEW IF NOT EXISTS tournament_entry_c AS
     SELECT DISTINCT te.tournament_id, COALESCE(p.merged_into, te.player_id) AS player_id
     FROM tournament_entry te JOIN player p ON p.id=te.player_id;
@@ -218,6 +237,12 @@ ADDED_COLUMNS = {
     "square_payment": {
         "fee_cents": "INTEGER",
         "deposit_id": "INTEGER REFERENCES bank_deposit(id) ON DELETE SET NULL",
+    },
+    "bank_deposit": {
+        "square_payout_id": "TEXT",
+        "payout_status": "TEXT NOT NULL DEFAULT ''",
+        "payout_version": "INTEGER",
+        "seen_in_bank": "INTEGER NOT NULL DEFAULT 1",
     },
     "venue_payment": {
         "venue_id": "INTEGER REFERENCES venue(id) ON DELETE SET NULL",

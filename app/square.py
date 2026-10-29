@@ -4,7 +4,7 @@ import threading
 from datetime import date, datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from . import config, db, sync
+from . import bank, config, db, sync
 from .payouts import RuleError
 from .square_client import SquareClient, SquareConfigError, SquareRateLimited, environment
 
@@ -72,10 +72,13 @@ def _store(conn, tournament_id: str | None, p, counts: dict):
     if tournament_id is None:
         return
     player = _auto_player(conn, tournament_id, p.fingerprint)
+    paid_out_by = conn.execute(  # an imported Square payout that already listed this payment
+        "SELECT deposit_id FROM square_payout_entry WHERE payment_id=? AND type='CHARGE' LIMIT 1", (p.id,)).fetchone()
     conn.execute("""INSERT INTO square_payment (id, tournament_id, player_id, link, amount_cents, fee_cents, created_at,
-                    source_type, card_brand, last_4, fingerprint, cardholder_name, note, receipt_url)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                 (p.id, tournament_id, player, "auto" if player else "none", *fields))
+                    source_type, card_brand, last_4, fingerprint, cardholder_name, note, receipt_url, deposit_id)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                 (p.id, tournament_id, player, "auto" if player else "none", *fields,
+                  paid_out_by[0] if paid_out_by else None))
     counts["new"] += 1
     counts["linked"] += player is not None
 
@@ -129,45 +132,68 @@ AUTO_PULL_DAYS = 14  # automatic pulls cover tracked series' tournaments from th
 AUTO_PULL_FIRST_DELAY = 60  # seconds after startup before the first automatic pull
 
 _running = threading.Lock()  # one Square pull at a time, manual or automatic
-status: dict = {}  # series_id -> {"state": "running"|"done"|"error", "message": str, "at": str, "auto": bool}
+status: dict = {}  # series_id or "payouts" -> {"state": "running"|"done"|"error", "message": str, "at": str, "auto": bool}
 log = logging.getLogger("the_pot.square")
 
 
-def _work(series_id: int, client_factory, since: str | None, auto: bool):
-    """Run one series pull; the caller holds _running, which this releases."""
-    status[series_id] = {"state": "running", "message": "Pulling payments from Square...", "at": sync.now(),
-                         "auto": auto}
+def _run(key, client_factory, job, auto: bool, message: str = "Pulling payments from Square..."):
+    """Run one Square job, job(conn, client) -> result message, recording its status under `key` (a series id, or
+    "payouts"). The caller holds _running, which this releases."""
+    status[key] = {"state": "running", "message": message, "at": sync.now(), "auto": auto}
     try:
         client = client_factory()
         try:
             with db.session() as conn:
-                r = pull_series(conn, client, series_id, since)
+                result = job(conn, client)
         finally:
             getattr(client, "close", lambda: None)()
-        message = f"{r['new']} new and {r['updated']} updated payments across {r['tournaments']} tournaments"
-        if r["linked"]:
-            message += f", {r['linked']} linked automatically"
-        status[series_id] = {"state": "done", "message": message, "at": sync.now(), "auto": auto}
-    except Exception as e:  # shown on the series page; never includes the token
+        status[key] = {"state": "done", "message": result, "at": sync.now(), "auto": auto}
+    except Exception as e:  # shown on the page; never includes the token
         detail = str(e) if isinstance(e, (SquareConfigError, SquareRateLimited)) else f"{type(e).__name__}: {e}"
-        status[series_id] = {"state": "error", "message": detail, "at": sync.now(), "auto": auto}
-        log.warning("Square pull for series %s failed: %s", series_id, detail)
+        status[key] = {"state": "error", "message": detail, "at": sync.now(), "auto": auto}
+        log.warning("Square %s pull failed: %s", key, detail)
     finally:
         _running.release()
 
 
-def start_series_pull(series_id: int, client_factory) -> bool:
-    """Pull a whole series in the background. False when a Square pull is already running."""
+def _series_job(series_id: int, since: str | None):
+    def job(conn, client):
+        r = pull_series(conn, client, series_id, since)
+        message = f"{r['new']} new and {r['updated']} updated payments across {r['tournaments']} tournaments"
+        return message + (f", {r['linked']} linked automatically" if r["linked"] else "")
+    return job
+
+
+def _payouts_job(since: str):
+    def job(conn, client):
+        begin = datetime.combine(date.fromisoformat(since), time(0), ZoneInfo(config.TIMEZONE))
+        r = bank.import_payouts(conn, client, begin.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                                datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
+        return (f"{r['new']} new and {r['updated']} updated payouts since {since} ({r['unchanged']} unchanged), "
+                f"{r['matched']} payments matched")
+    return job
+
+
+def _start(key, client_factory, job, message: str) -> bool:
     if not _running.acquire(blocking=False):
         return False
-    status[series_id] = {"state": "running", "message": "Pulling payments from Square...", "at": sync.now(),
-                         "auto": False}
-    threading.Thread(target=_work, args=(series_id, client_factory, None, False), daemon=True).start()
+    status[key] = {"state": "running", "message": message, "at": sync.now(), "auto": False}
+    threading.Thread(target=_run, args=(key, client_factory, job, False, message), daemon=True).start()
     return True
 
 
+def start_series_pull(series_id: int, client_factory) -> bool:
+    """Pull a whole series in the background. False when a Square pull is already running."""
+    return _start(series_id, client_factory, _series_job(series_id, None), "Pulling payments from Square...")
+
+
+def start_payouts_pull(client_factory, since: str) -> bool:
+    """Import Square payouts sent since a date, in the background. False when a Square pull is already running."""
+    return _start("payouts", client_factory, _payouts_job(since), "Importing payouts from Square...")
+
+
 def auto_pull_once(client_factory, days: int = AUTO_PULL_DAYS):
-    """Pull recent tournaments of every tracked series, one series after another."""
+    """Pull recent tournaments of every tracked series, one series after another, then recent payouts."""
     if not config.square_token():
         return
     try:
@@ -182,7 +208,9 @@ def auto_pull_once(client_factory, days: int = AUTO_PULL_DAYS):
                WHERE s.tracked=1 AND t.excluded=0 AND t.start_date >= ? ORDER BY s.id""", (since,))]
     for series_id in series:
         if _running.acquire(blocking=False):  # a manual pull in progress? skip this series until next time
-            _work(series_id, client_factory, since, True)
+            _run(series_id, client_factory, _series_job(series_id, since), True)
+    if _running.acquire(blocking=False):  # then the payouts that paid them out
+        _run("payouts", client_factory, _payouts_job(since), True, "Importing payouts from Square...")
 
 
 def auto_pull_loop(stop: threading.Event, client_factory, hours: float):

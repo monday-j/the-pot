@@ -15,9 +15,9 @@ you've paid them and what you still owe. For your LAN, behind one shared passwor
   URLs redirect) and tables show it, with the full name on hover. Leave it blank when adding a series to get one suggested
   from the name; existing series are given one automatically on upgrade, and you can change it in the series settings.
 - **Rules** (per game, with optional single-event override): bracket fee, number of places paid, fixed pool,
-  % of bracket fees into the pool, % of entry fees into the pool, and a split % per place (e.g. `50,30,20`).
-  The tournament-wide entry fee is part of the series' terms (overridable per tournament).
-- **Terms over time**: a series' venue, entry fee and game rules are dated. When something changes (e.g. the series
+  % of bracket fees into the pool, % of venue fees into the pool, and a split % per place (e.g. `50,30,20`).
+  The tournament-wide venue fee is part of the series' terms (overridable per tournament).
+- **Terms over time**: a series' venue, venue fee and game rules are dated. When something changes (e.g. the series
   moves to a new venue), start new terms from that date on the series page: the game rules in effect then are copied
   so only what changed needs editing. Each tournament uses the terms in effect on its date, so earlier tournaments keep
   their old venue, fee and rules, and newly synced tournaments get the latest terms. Single-event overrides apply
@@ -31,7 +31,7 @@ you've paid them and what you still owe. For your LAN, behind one shared passwor
   history and payouts show under the main one, including on future syncs, and Unmerge puts them back. Players who
   entered the same event can't be merged.
 - **Venues** are tracked on their own (Venues page: each venue's series, tournaments held there, owed and paid). A
-  venue's cut is made of up to three parts that add together: a flat amount per tournament, a % of entry fees collected
+  venue's cut is made of up to three parts that add together: a flat amount per tournament, a % of venue fees collected
   (fee x attendees) and a % of bracket fees collected (each event's rule bracket fee x entrants; events without a rule
   count as $0). A series picks its venue in its terms (see above); a tournament can be held at a different venue, use
   a custom cut, or have no venue. The venue cut is a separate payable per tournament (it does not change the prize pool), marked
@@ -40,7 +40,7 @@ you've paid them and what you still owe. For your LAN, behind one shared passwor
   Databases from before venues existed get one venue per distinct series venue name and cut on upgrade.
 - **Square** (optional, card taps at the venue): on a tournament page, "Pull payments from Square" fetches the
   completed payments (net of refunds) taken that day, from midnight until 6am the next morning in your `TZ`, at the
-  venue's Square location if it has one set. They are compared with what attendees should have paid (entry fee + the
+  venue's Square location if it has one set. They are compared with what attendees should have paid (venue fee + the
   bracket fee of each event entered) so a count or total mismatch stands out. Link each payment to a player to see who
   is unpaid, short or overpaid. Once you've linked a card to a player (by Square's card fingerprint), all its payments
   are linked to them, at every tournament, past and future: a second payment the same night, or one where they didn't

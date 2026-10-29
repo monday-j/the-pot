@@ -65,7 +65,7 @@ class FakeSquare:
 
 @pytest.fixture
 def fnb(conn):  # noqa: F811
-    """FNB with a $5 entry fee and a $5 bracket fee: each of t1's four attendees owes $10."""
+    """FNB with a $5 venue fee and a $5 bracket fee: each of t1's four attendees owes $10."""
     conn.execute("UPDATE series SET custom_slug='fnb' WHERE id=1")
     conn.execute("UPDATE series_period SET entry_fee_cents=500 WHERE id=1")
     sync.sync_series(conn, TwoNightsClient(), 1)

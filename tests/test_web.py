@@ -120,7 +120,7 @@ def settings(**kw):
 
 
 def set_terms(client, period_id=1, **kw):
-    """Venue and entry fee of a series' terms (the first ones by default)."""
+    """Venue and venue fee of a series' terms (the first ones by default)."""
     return client.post(f"/periods/{period_id}", data={"venue_id": "1", "entry_fee": "5", **kw})
 
 
@@ -129,7 +129,7 @@ def add_venue(client, **kw):
 
 
 def test_venue_flow(seeded):
-    assert "Venue % of entry fees must be between 0 and 100" in add_venue(seeded, entry_pct="150").text
+    assert "Venue&#39;s % of venue fees must be between 0 and 100" in add_venue(seeded, entry_pct="150").text
     assert "Unknown venue" in set_terms(seeded).text
     add_venue(seeded)
     assert seeded.get("/venue").text.count("Mark paid") == 0

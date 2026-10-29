@@ -5,12 +5,12 @@
 <div class="summary"><span>{{ t.start_date }}</span><span><b>{{ attendees|length }}</b> attendees</span><span><b>{{ events|length }}</b> events</span>
 <span>series: {{ m.series(t.series_id, t.series_name, t.series_code) }}</span>{% if t.period_id %}<span><a href="/series/{{ t.series_code or t.series_id }}?period={{ t.period_id }}#rules">terms {{ "from " ~ t.period_start if t.period_start else "from the start" }}</a>{% if t.series_venue %} · {{ m.venue(t.series_venue_id, t.series_venue) }}{% endif %}</span>{% endif %}<span>{{ m.parry(t.slug) }}</span></div>
 <form method="post" action="/tournaments/{{ t.id }}/entry-fee" class="toolbar">
-<label>Entry fee override ($, blank = the series' fee at the time, {{ (t.series_fee or 0)|money }})<input name="entry_fee" value="{{ '' if t.entry_fee_cents is none else '%.2f' % (t.entry_fee_cents / 100) }}" size="8"></label>
+<label>Venue fee override ($, blank = the series' fee at the time, {{ (t.series_fee or 0)|money }})<input name="entry_fee" value="{{ '' if t.entry_fee_cents is none else '%.2f' % (t.entry_fee_cents / 100) }}" size="8"></label>
 <button class="sec">Save</button></form>
 {% if venue %}<h2>Venue{% if venue.info.venue_id %} <span class="n">· {{ m.venue(venue.info.venue_id, venue.info.venue_name) }}</span>{% endif %}</h2>
 <table class="kv">
 <tr><th>Flat per tournament</th><td>{{ venue.parts.flat|money }}</td></tr>
-<tr><th>{{ venue.info.cut.entry_pct }}% of entry fees ({{ venue.info.entry_fee|money }} × {{ venue.info.attendees }} attendees = {{ venue.info.entry_collected|money }})</th><td>{{ venue.parts.entry_share|money }}</td></tr>
+<tr><th>{{ venue.info.cut.entry_pct }}% of venue fees ({{ venue.info.entry_fee|money }} × {{ venue.info.attendees }} attendees = {{ venue.info.entry_collected|money }})</th><td>{{ venue.parts.entry_share|money }}</td></tr>
 <tr><th>{{ venue.info.cut.bracket_pct }}% of bracket fees (collected {{ venue.info.bracket_collected|money }})</th><td>{{ venue.parts.bracket_share|money }}</td></tr>
 <tr><th><b>Venue total</b></th><td><b>{{ venue.parts.total|money }}</b>{% if venue.payment %}{{ m.discrepancy(venue.payment.amount_cents, venue.payment.computed_cents) }}
  {{ m.status(venue.payment.status, venue.payment.paid_at) }} {{ m.venuebtn(t.id, venue.payment.status, here) }}{% if venue.payment.note %} <span class="mut">{{ venue.payment.note }}</span>{% endif %}{% endif %}</td></tr>
@@ -25,7 +25,7 @@
 <option value="custom" {{ "selected" if t.venue_mode == "custom" }}>Custom</option>
 <option value="none" {{ "selected" if t.venue_mode == "none" }}>No venue</option></select></label>
 <label>Custom flat $<input name="venue_flat" value="{{ '%.2f' % (t.venue_flat_cents / 100) }}" size="7"></label>
-<label>Custom % entry fees<input name="venue_entry_pct" value="{{ t.venue_entry_pct }}" size="5"></label>
+<label>Custom % venue fees<input name="venue_entry_pct" value="{{ t.venue_entry_pct }}" size="5"></label>
 <label>Custom % bracket fees<input name="venue_bracket_pct" value="{{ t.venue_bracket_pct }}" size="5"></label>
 <button class="sec">Save</button></form>
 <h2>Events <span class="n">· {{ events|length }}</span></h2>
@@ -59,7 +59,7 @@
 <table class="sortable"><thead><tr><th>Player</th><th class="r">Expected</th><th class="r">Paid</th><th class="r">Difference</th><th>Status</th></tr></thead><tbody>
 {% for r in recon.players %}<tr><td>{{ m.player(r.id, r.tag) }}</td>{{ m.mtd(r.expected) }}{{ m.mtd(r.paid) }}<td class="r {{ 'ok' if r.diff == 0 else 'bad' }}" data-v="{{ r.diff }}">{{ r.diff|money }}</td>
 <td><span class="{{ 'ok' if r.state == 'ok' else 'warn' if r.state == 'unmatched' else 'bad' }}">{{ {"ok": "paid", "unpaid": "unpaid", "short": "short", "over": "overpaid", "unmatched": "not matched yet"}[r.state] }}</span></td></tr>{% endfor %}</tbody></table>
-<p class="help">Expected = entry fee + the bracket fee of each event entered. Link each payment to the player who made it; a card you've linked to one player has all its payments linked to them, here and at every other tournament. Ignore payments that aren't tournament fees.</p>
+<p class="help">Expected = venue fee + the bracket fee of each event entered. Link each payment to the player who made it; a card you've linked to one player has all its payments linked to them, here and at every other tournament. Ignore payments that aren't tournament fees.</p>
 {% endif %}
 <h2>Attendees <span class="n">· {{ attendees|length }}</span></h2>
 <table class="sortable"><thead><tr><th>Player</th><th>Entered</th><th>Placings</th><th class="r">Owed</th><th class="r">Paid</th></tr></thead><tbody>

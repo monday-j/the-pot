@@ -7,10 +7,10 @@
 {% if issue %}<div class="strip"><b>Placements not finalised: {{ issue }}.</b> No payouts are calculated until this is fixed on parry.gg and re-synced.</div>{% endif %}
 {% if info %}<h2>Prize pool</h2>
 <table class="kv"><tr><th>Rule</th><td>Bracket fee {{ info[0].bracket_fee|money }}, {{ info[0].payout_places }} places paid ({{ info[0].splits|join(" / ") }})</td></tr>
-<tr><th>Entrants / attendees / entry fee</th><td>{{ info[2] }} / {{ info[3] }} / {{ info[4]|money }}</td></tr>
+<tr><th>Entrants / attendees / venue fee</th><td>{{ info[2] }} / {{ info[3] }} / {{ info[4]|money }}</td></tr>
 <tr><th>Fixed pool</th><td>{{ breakdown.fixed|money }}</td></tr>
 <tr><th>{{ info[0].bracket_fee_pool_pct }}% of bracket fees ({{ info[0].bracket_fee|money }} × {{ info[2] }})</th><td>{{ breakdown.bracket_share|money }}</td></tr>
-<tr><th>{{ info[0].entry_fee_share_pct }}% of entry fees ({{ info[4]|money }} × {{ info[3] }})</th><td>{{ breakdown.entry_share|money }}</td></tr>
+<tr><th>{{ info[0].entry_fee_share_pct }}% of venue fees ({{ info[4]|money }} × {{ info[3] }})</th><td>{{ breakdown.entry_share|money }}</td></tr>
 <tr><th><b>Pool</b></th><td><b>{{ info[1]|money }}</b></td></tr>
 {% if not issue %}<tr><th>Not allocated</th><td>{{ (undistributed or 0)|money }}</td></tr>{% endif %}</table>
 {% else %}<div class="strip">No payout rule applies to this event. Add one on {% if e.series_id %}<a href="/series/{{ e.scode or e.series_id }}">the series page</a>{% else %}the series page{% endif %}.</div>{% endif %}

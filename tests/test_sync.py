@@ -235,7 +235,7 @@ def test_event_without_rule_adds_no_bracket_fees(conn):
     sync.sync_series(conn, FakeClient(), 1)
     info = sync.venue_inputs(conn, "t1")
     assert info["bracket_collected"] == 0 and info["unruled"] == ["Ultimate Singles"]
-    assert venue_row(conn)["amount_cents"] == 2200  # flat + 10% of entry fees only
+    assert venue_row(conn)["amount_cents"] == 2200  # flat + 10% of venue fees only
 
 
 def test_event_removed_on_parry_gg_is_pruned(conn):
@@ -401,7 +401,7 @@ def test_new_terms_apply_from_their_date_and_old_tournaments_keep_theirs(conn):
     assert (venue_row(conn, "t3")["amount_cents"], venue_row(conn, "t3")["venue_id"]) == (3000, 2)
     assert payouts(conn, "e1")["u1"] == (1300, "owed")  # the old rule: 1000 + 80% of 500*4
     assert payouts(conn, "e3")["u5"] == (2900, "owed")  # the copied rule with a bigger fixed pool: (5000+800)/2
-    assert sync.event_pool(conn, "e3")[4] == 1000  # the new entry fee
+    assert sync.event_pool(conn, "e3")[4] == 1000  # the new venue fee
 
     # a later sync of a newer tournament inherits the latest terms
     client.tournaments["t4"] = TournamentInfo("t4", "Friday Night Brawl #92", "fnb-92", "2026-01-15", 0, [])

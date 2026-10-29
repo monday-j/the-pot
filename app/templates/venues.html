@@ -10,8 +10,8 @@
 <form method="post" action="/venues" class="toolbar">
 <label>Name<input name="name" required></label>
 <label>Flat $ per tournament<input name="flat" value="0" size="7"></label>
-<label>% of entry fees<input name="entry_pct" value="0" size="5"></label>
+<label>% of venue fees<input name="entry_pct" value="0" size="5"></label>
 <label>% of bracket fees<input name="bracket_pct" value="0" size="5"></label>
 <label>Notes<input name="notes" size="30"></label><button>Add venue</button></form>
-<p class="help">A venue's cut is a flat amount per tournament plus a % of entry fees collected (fee × attendees) and a % of bracket fees collected (bracket fee × entrants, per event rule). Pick the venue in a series' settings; a tournament can be held at a different venue.</p>
+<p class="help">A venue's cut is a flat amount per tournament plus a % of venue fees collected (fee × attendees) and a % of bracket fees collected (bracket fee × entrants, per event rule). Pick the venue in a series' settings; a tournament can be held at a different venue.</p>
 {% endblock %}

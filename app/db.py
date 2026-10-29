@@ -23,7 +23,7 @@ CREATE TABLE IF NOT EXISTS series (
     tracked INTEGER NOT NULL DEFAULT 0,
     entry_fee_cents INTEGER NOT NULL DEFAULT 0,
     last_synced TEXT,
-    -- legacy: the venue and entry fee now belong to series_period (_migrate_periods copies them over)
+    -- legacy: the venue and venue fee now belong to series_period (_migrate_periods copies them over)
     venue_id INTEGER REFERENCES venue(id) ON DELETE SET NULL,
     -- legacy per-series venue, moved into the venue table by _migrate_venues and no longer read
     venue_name TEXT NOT NULL DEFAULT '',
@@ -31,7 +31,7 @@ CREATE TABLE IF NOT EXISTS series (
     venue_entry_pct TEXT NOT NULL DEFAULT '0',
     venue_bracket_pct TEXT NOT NULL DEFAULT '0'
 );
--- A series' terms (venue, entry fee, payout rules) from a date on; starts_on '' is "from the beginning".
+-- A series' terms (venue, venue fee, payout rules) from a date on; starts_on '' is "from the beginning".
 CREATE TABLE IF NOT EXISTS series_period (
     id INTEGER PRIMARY KEY,
     series_id INTEGER NOT NULL REFERENCES series(id) ON DELETE CASCADE,
@@ -299,7 +299,7 @@ RULE_COPY = ("id, series_id, game_name, event_id, bracket_fee_cents, payout_plac
 
 
 def _migrate_periods(conn):
-    """Give each series a first period holding its venue and entry fee, and move its game rules into it.
+    """Give each series a first period holding its venue and venue fee, and move its game rules into it.
 
     The rule table is rebuilt the first time (SQLite can't change a unique constraint in place).
     """

@@ -29,7 +29,7 @@ class Rule:
         if any(s < 0 for s in self.splits):
             raise RuleError("Splits cannot be negative")
         for name, pct in (("Bracket fee pool %", self.bracket_fee_pool_pct),
-                          ("Entry fee share %", self.entry_fee_share_pct)):
+                          ("Venue fee share %", self.entry_fee_share_pct)):
             if not Decimal(0) <= pct <= HUNDRED:
                 raise RuleError(f"{name} must be between 0 and 100")
         if min(self.bracket_fee, self.fixed_pool) < 0:
@@ -56,7 +56,7 @@ def _cents(value: Decimal) -> int:
 
 
 def pool_breakdown(rule: Rule, entrants: int, attendees: int, entry_fee: int) -> dict:
-    """The pool's components in cents: fixed pool, share of bracket fees, share of entry fees, and their total."""
+    """The pool's components in cents: fixed pool, share of bracket fees, share of venue fees, and their total."""
     bracket_part = Decimal(rule.bracket_fee * entrants) * rule.bracket_fee_pool_pct / HUNDRED
     entry_part = Decimal(entry_fee * attendees) * rule.entry_fee_share_pct / HUNDRED
     parts = {"fixed": rule.fixed_pool, "bracket_share": _cents(bracket_part), "entry_share": _cents(entry_part)}
@@ -64,7 +64,7 @@ def pool_breakdown(rule: Rule, entrants: int, attendees: int, entry_fee: int) ->
 
 
 def pool_cents(rule: Rule, entrants: int, attendees: int, entry_fee: int) -> int:
-    """Fixed pool + share of bracket fees collected + share of entry fees collected."""
+    """Fixed pool + share of bracket fees collected + share of venue fees collected."""
     return pool_breakdown(rule, entrants, attendees, entry_fee)["total"]
 
 
@@ -112,7 +112,7 @@ class VenueCut:
     def validate(self):
         if self.flat < 0:
             raise RuleError("Venue flat amount cannot be negative")
-        for name, pct in (("Venue % of entry fees", self.entry_pct), ("Venue % of bracket fees", self.bracket_pct)):
+        for name, pct in (("Venue's % of venue fees", self.entry_pct), ("Venue's % of bracket fees", self.bracket_pct)):
             if not Decimal(0) <= pct <= HUNDRED:
                 raise RuleError(f"{name} must be between 0 and 100")
 
@@ -122,7 +122,7 @@ class VenueCut:
 
 
 def venue_breakdown(cut: VenueCut, entry_fees_collected: int, bracket_fees_collected: int) -> dict:
-    """The venue's components in cents: flat, share of entry fees, share of bracket fees, and their total."""
+    """The venue's components in cents: flat, share of venue fees, share of bracket fees, and their total."""
     parts = {"flat": cut.flat,
              "entry_share": _cents(Decimal(entry_fees_collected) * cut.entry_pct / HUNDRED),
              "bracket_share": _cents(Decimal(bracket_fees_collected) * cut.bracket_pct / HUNDRED)}

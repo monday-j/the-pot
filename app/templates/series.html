@@ -26,7 +26,7 @@
 
 {% macro since(p) %}{{ "from " ~ p.starts_on if p.starts_on else "from the start" }}{% endmacro %}
 <h2>Terms over time <span class="n">· {{ periods|length }}</span></h2>
-<table><thead><tr><th>From</th><th>Venue</th><th>Entry fee ($)</th><th class="r">Tournaments</th><th class="r">Game rules</th><th>Note</th><th></th></tr></thead><tbody>
+<table><thead><tr><th>From</th><th>Venue</th><th>Venue fee ($)</th><th class="r">Tournaments</th><th class="r">Game rules</th><th>Note</th><th></th></tr></thead><tbody>
 {% for p in periods %}<tr>
 <td><form id="period-{{ p.id }}" method="post" action="/periods/{{ p.id }}"></form>{% if p.starts_on %}<input type="date" name="starts_on" form="period-{{ p.id }}" value="{{ p.starts_on }}" required>{% else %}the start{% endif %}</td>
 <td><select name="venue_id" form="period-{{ p.id }}"><option value="">No venue</option>{% for v in venues %}<option value="{{ v.id }}" {{ "selected" if v.id == p.venue_id }}>{{ v.name }}</option>{% endfor %}</select></td>
@@ -42,7 +42,7 @@
 <td><input name="entry_fee" form="period-new" value="{{ '%.2f' % ((current.entry_fee_cents if current else 0) / 100) }}" size="6"></td>
 <td colspan="2" class="mut">game rules are copied</td><td><input name="note" form="period-new" placeholder="e.g. moved venue"></td>
 <td><button form="period-new">Start new terms</button></td></tr></tfoot></table>
-<p class="help">Each tournament uses the terms (venue, entry fee and game payout rules) in effect on its date, so a move to a new venue or a price change doesn't reprice earlier tournaments. Newly synced tournaments get the latest terms. Starting new terms copies the game rules in effect on that date; edit them below. Payouts already marked paid are never changed.</p>
+<p class="help">Each tournament uses the terms (venue, venue fee and game payout rules) in effect on its date, so a move to a new venue or a price change doesn't reprice earlier tournaments. Newly synced tournaments get the latest terms. Starting new terms copies the game rules in effect on that date; edit them below. Payouts already marked paid are never changed.</p>
 
 <h2>Games <span class="n">· {{ games|length }}</span></h2>
 <table class="sortable"><thead><tr><th>Game</th><th class="r">Events</th><th class="r">Tournaments</th><th class="r">Entrants</th><th class="r">Owed</th><th class="r">Paid</th><th>Rule ({{ since(shown) }})</th></tr></thead><tbody>
@@ -51,7 +51,7 @@
 {% else %}<tr><td colspan="7" class="mut">No events yet.</td></tr>{% endfor %}</tbody></table>
 
 <h2 id="rules">Payout rules <span class="n">· terms {{ since(shown) }} · {{ rules|length }}</span></h2>
-<table><thead><tr><th>Applies to</th><th class="r">Bracket fee</th><th class="r">Places</th><th class="r">Fixed pool</th><th class="r">% bracket fees</th><th class="r">% entry fees</th><th>Split %</th><th></th></tr></thead><tbody>
+<table><thead><tr><th>Applies to</th><th class="r">Bracket fee</th><th class="r">Places</th><th class="r">Fixed pool</th><th class="r">% bracket fees</th><th class="r">% venue fees</th><th>Split %</th><th></th></tr></thead><tbody>
 {% for r in rules %}<tr><td>{% if r.event_id %}Event: {{ m.tournament(r.tournament_id, r.tournament_name) }} › {{ m.event(r.event_id, r.event_name) }}{% else %}{{ m.game(r.game_name) }}{% endif %}</td>
 <td class="r">{{ r.bracket_fee_cents|money }}</td><td class="r">{{ r.payout_places }}</td><td class="r">{{ r.fixed_pool_cents|money }}</td>
 <td class="r">{{ r.bracket_fee_pool_pct }}%</td><td class="r">{{ r.entry_fee_share_pct }}%</td><td>{{ (r.splits|fromjson)|join(" / ") }}</td>
@@ -65,7 +65,7 @@
 <td><input name="payout_places" form="rule-form" type="number" min="1" value="3" title="Places paid"></td>
 <td><input name="fixed_pool" form="rule-form" value="0" size="5" title="Fixed pool ($)"></td>
 <td><input name="bracket_fee_pool_pct" form="rule-form" value="0" size="4" title="% of bracket fees to pool"></td>
-<td><input name="entry_fee_share_pct" form="rule-form" value="0" size="4" title="% of entry fees to pool"></td>
+<td><input name="entry_fee_share_pct" form="rule-form" value="0" size="4" title="% of venue fees to pool"></td>
 <td><input name="splits" form="rule-form" value="50,30,20" size="12" title="Split % by place"></td>
 <td><button form="rule-form">Save rule</button></td></tr></tfoot></table>
 <p class="help">The bottom row adds a rule to the terms {{ since(shown) }}: saving replaces any rule for the same game (or event) and recalculates unpaid payouts. Payouts already marked paid are left alone and flagged if the maths now differs. A single-event rule overrides the game rule, whatever the terms.</p>
@@ -77,5 +77,5 @@
 <tr><th>Custom slug (quick link shared by the series)</th><td><input name="custom_slug" value="{{ s.custom_slug }}"></td></tr>
 <tr><th>Name pattern (fallback)</th><td><input name="pattern" value="{{ s.pattern }}"></td></tr>
 <tr><th></th><td><button>Save settings</button></td></tr></table></form>
-<p class="help">The venue and entry fee are part of the terms above. The venue's cut is set on its <a href="/venues">venue page</a>. It is a separate payable per tournament (see the <a href="/venue">venue payments</a> ledger) and does not change the prize pool. A tournament can be held at a different venue, use a custom cut, or have no venue.</p>
+<p class="help">The venue and venue fee are part of the terms above. The venue's cut is set on its <a href="/venues">venue page</a>. It is a separate payable per tournament (see the <a href="/venue">venue payments</a> ledger) and does not change the prize pool. A tournament can be held at a different venue, use a custom cut, or have no venue.</p>
 {% endblock %}

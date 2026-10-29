@@ -239,7 +239,7 @@ def auto_pull_loop(stop: threading.Event, client_factory, hours: float):
 
 
 def expected_by_player(conn, tournament_id: str) -> dict:
-    """What each attendee should have paid: the entry fee plus the bracket fee of each event they entered."""
+    """What each attendee should have paid: the venue fee plus the bracket fee of each event they entered."""
     t = conn.execute("""SELECT t.*, p.entry_fee_cents AS p_fee FROM tournament t
                         LEFT JOIN series_period p ON p.id=t.period_id WHERE t.id=?""", (tournament_id,)).fetchone()
     fee = t["entry_fee_cents"] if t["entry_fee_cents"] is not None else (t["p_fee"] or 0)

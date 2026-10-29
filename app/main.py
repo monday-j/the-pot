@@ -161,7 +161,7 @@ def describe_rule(r) -> str:
     if r["bracket_fee_cents"] and r["bracket_fee_pool_pct"] not in ("0", "0.0"):
         bits.append(f"{r['bracket_fee_pool_pct']}% of bracket fees")
     if r["entry_fee_share_pct"] not in ("0", "0.0"):
-        bits.append(f"{r['entry_fee_share_pct']}% of entry fees")
+        bits.append(f"{r['entry_fee_share_pct']}% of venue fees")
     return ", ".join(bits + [f"{r['payout_places']} paid ({splits})"])
 
 

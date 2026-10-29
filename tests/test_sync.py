@@ -44,9 +44,10 @@ def conn(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "DB_PATH", tmp_path / "pot.db")
     db.init()
     c = db.connect()
-    c.execute("INSERT INTO series (id, name, pattern, tracked, entry_fee_cents) VALUES (1,'FNB','friday night brawl',1,0)")
-    c.execute("INSERT INTO rule (series_id, game_name, bracket_fee_cents, payout_places, fixed_pool_cents,"
-              " bracket_fee_pool_pct, entry_fee_share_pct, splits) VALUES (1,'Smash Ultimate',500,3,1000,'80','0',?)",
+    c.execute("INSERT INTO series (id, name, pattern, tracked) VALUES (1,'FNB','friday night brawl',1)")
+    c.execute("INSERT INTO series_period (id, series_id) VALUES (1, 1)")
+    c.execute("INSERT INTO rule (series_id, period_id, game_name, bracket_fee_cents, payout_places, fixed_pool_cents,"
+              " bracket_fee_pool_pct, entry_fee_share_pct, splits) VALUES (1,1,'Smash Ultimate',500,3,1000,'80','0',?)",
               (splits_to_json((D(50), D(30), D(20))),))
     c.commit()
     yield c
@@ -166,7 +167,7 @@ def set_venue(conn, flat=2000, entry="10", bracket="10", fee=500):
     conn.execute("INSERT INTO venue (id, name, flat_cents, entry_pct, bracket_pct) VALUES (1,'The Hall',?,?,?) "
                  "ON CONFLICT(id) DO UPDATE SET flat_cents=excluded.flat_cents, entry_pct=excluded.entry_pct, "
                  "bracket_pct=excluded.bracket_pct", (flat, entry, bracket))
-    conn.execute("UPDATE series SET venue_id=1, entry_fee_cents=? WHERE id=1", (fee,))
+    conn.execute("UPDATE series_period SET venue_id=1, entry_fee_cents=? WHERE id=1", (fee,))
 
 
 def venue_row(conn, tid="t1"):
@@ -354,7 +355,8 @@ def test_init_moves_series_venues_into_the_venue_table(tmp_path, monkeypatch):
     venues = {r["name"]: (r["flat_cents"], r["entry_pct"]) for r in c.execute("SELECT * FROM venue")}
     assert venues == {"The Hall": (2000, "10"), "The Hall (TTT)": (500, "0"), "WED venue": (0, "5")}
     by_series = {r["code"]: r["vname"] for r in c.execute(
-        "SELECT s.code, v.name AS vname FROM series s LEFT JOIN venue v ON v.id=s.venue_id")}
+        """SELECT s.code, v.name AS vname FROM series s JOIN series_period p ON p.series_id=s.id
+           LEFT JOIN venue v ON v.id=p.venue_id""")}  # now held by each series' first terms
     assert by_series == {"FNB": "The Hall", "SNS": "The Hall", "TTT": "The Hall (TTT)", "WED": "WED venue", "NON": None}
     assert c.execute("SELECT v.name FROM venue_payment vp JOIN venue v ON v.id=vp.venue_id").fetchone()[0] == "The Hall"
     assert c.execute("SELECT COUNT(*) FROM series WHERE venue_name != ''").fetchone()[0] == 0
@@ -374,3 +376,93 @@ def test_tournament_held_at_another_venue(conn):
     sync.recompute_venue(conn, "t1")
     row = venue_row(conn)
     assert (row["venue_id"], row["amount_cents"], row["computed_cents"]) == (2, 700, 2400)  # paid stays with Pop-up
+
+
+def add_terms(conn, starts_on, venue_id=None, fee=0, rule_fixed=None):
+    before = sync.period_for(conn, 1, starts_on)
+    pid = sync.create_period(conn, 1, starts_on, venue_id, fee, copy_rules_from=before["id"])
+    if rule_fixed is not None:
+        conn.execute("UPDATE rule SET fixed_pool_cents=? WHERE period_id=?", (rule_fixed, pid))
+    return pid
+
+
+def test_new_terms_apply_from_their_date_and_old_tournaments_keep_theirs(conn):
+    conn.execute("UPDATE series SET custom_slug='fnb' WHERE id=1")
+    set_venue(conn)  # The Hall, $5 entry
+    client = TwoNightsClient()  # t1 on 2026-01-01, t3 on 2026-01-08
+    sync.sync_series(conn, client, 1)
+    assert venue_row(conn, "t3")["amount_cents"] == 2000 + 100 + 100  # flat + 10% of 5*2 entry + 10% of 5*2 bracket
+
+    conn.execute("INSERT INTO venue (id, name, flat_cents) VALUES (2, 'New Place', 3000)")
+    pid = add_terms(conn, "2026-01-05", venue_id=2, fee=1000, rule_fixed=5000)
+    sync.recompute_series(conn, 1)
+    assert [r["period_id"] for r in conn.execute("SELECT period_id FROM tournament ORDER BY id")] == [1, pid]
+    assert venue_row(conn, "t1")["amount_cents"] == 2400 and venue_row(conn, "t1")["venue_id"] == 1
+    assert (venue_row(conn, "t3")["amount_cents"], venue_row(conn, "t3")["venue_id"]) == (3000, 2)
+    assert payouts(conn, "e1")["u1"] == (1300, "owed")  # the old rule: 1000 + 80% of 500*4
+    assert payouts(conn, "e3")["u5"] == (2900, "owed")  # the copied rule with a bigger fixed pool: (5000+800)/2
+    assert sync.event_pool(conn, "e3")[4] == 1000  # the new entry fee
+
+    # a later sync of a newer tournament inherits the latest terms
+    client.tournaments["t4"] = TournamentInfo("t4", "Friday Night Brawl #92", "fnb-92", "2026-01-15", 0, [])
+    client.by_slug = {"fnb": ["t1", "t3", "t4"]}
+    sync.sync_series(conn, client, 1)
+    assert conn.execute("SELECT period_id FROM tournament WHERE id='t4'").fetchone()[0] == pid
+
+    # moving the start date later puts t3 back on the old terms
+    conn.execute("UPDATE series_period SET starts_on='2026-01-10' WHERE id=?", (pid,))
+    sync.recompute_series(conn, 1)
+    assert venue_row(conn, "t3")["venue_id"] == 1 and payouts(conn, "e3")["u5"] == (900, "owed")
+
+
+def test_period_for_picks_the_terms_in_effect():
+    import sqlite3
+    c = sqlite3.connect(":memory:")
+    c.row_factory = sqlite3.Row
+    c.executescript(db.SCHEMA)
+    c.execute("INSERT INTO series (id, name) VALUES (1, 'x')")
+    for day in ("", "2026-02-01", "2026-03-01"):
+        c.execute("INSERT INTO series_period (series_id, starts_on) VALUES (1, ?)", (day,))
+    pick = lambda d: sync.period_for(c, 1, d)["starts_on"]
+    assert (pick("2026-01-15"), pick("2026-02-01"), pick("2026-02-28"), pick("2027-01-01")) == \
+        ("", "2026-02-01", "2026-02-01", "2026-03-01")
+    assert pick(None) == pick("") == "2026-03-01"  # undated: the latest
+
+
+def test_init_moves_game_rules_into_a_first_period(tmp_path, monkeypatch):
+    import sqlite3
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(config, "DB_PATH", tmp_path / "pot.db")
+    old = sqlite3.connect(tmp_path / "pot.db")
+    old.executescript("""
+        CREATE TABLE series (id INTEGER PRIMARY KEY, name TEXT NOT NULL, pattern TEXT NOT NULL DEFAULT '',
+            tracked INTEGER NOT NULL DEFAULT 0, entry_fee_cents INTEGER NOT NULL DEFAULT 0, last_synced TEXT);
+        CREATE TABLE rule (id INTEGER PRIMARY KEY, series_id INTEGER NOT NULL, game_name TEXT NOT NULL DEFAULT '',
+            event_id TEXT, bracket_fee_cents INTEGER NOT NULL DEFAULT 0, payout_places INTEGER NOT NULL DEFAULT 3,
+            fixed_pool_cents INTEGER NOT NULL DEFAULT 0, bracket_fee_pool_pct TEXT NOT NULL DEFAULT '0',
+            entry_fee_share_pct TEXT NOT NULL DEFAULT '0', splits TEXT NOT NULL DEFAULT '["100"]',
+            UNIQUE (series_id, game_name, event_id));
+        CREATE TABLE tournament (id TEXT PRIMARY KEY, series_id INTEGER, name TEXT NOT NULL, slug TEXT, start_date TEXT,
+            num_attendees INTEGER NOT NULL DEFAULT 0, excluded INTEGER NOT NULL DEFAULT 0,
+            manual INTEGER NOT NULL DEFAULT 0, entry_fee_cents INTEGER);
+        CREATE TABLE event (id TEXT PRIMARY KEY, tournament_id TEXT NOT NULL, name TEXT NOT NULL,
+            game_name TEXT NOT NULL DEFAULT '', entrant_count INTEGER NOT NULL DEFAULT 0,
+            completed INTEGER NOT NULL DEFAULT 1);
+        INSERT INTO series (id, name, entry_fee_cents) VALUES (1, 'FNB', 500);
+        INSERT INTO tournament (id, series_id, name) VALUES ('t1', 1, 'x');
+        INSERT INTO event (id, tournament_id, name) VALUES ('e1', 't1', 'x');
+        INSERT INTO rule (id, series_id, game_name, fixed_pool_cents) VALUES (7, 1, 'Smash Ultimate', 1000);
+        INSERT INTO rule (id, series_id, event_id, fixed_pool_cents) VALUES (8, 1, 'e1', 0);
+    """)
+    old.close()
+    db.init()
+    db.init()
+    c = db.connect()
+    period = c.execute("SELECT * FROM series_period").fetchone()
+    assert (period["starts_on"], period["entry_fee_cents"]) == ("", 500)
+    rules = {r["id"]: (r["period_id"], r["fixed_pool_cents"]) for r in c.execute("SELECT * FROM rule")}
+    assert rules == {7: (period["id"], 1000), 8: (None, 0)}
+    assert c.execute("SELECT period_id FROM tournament").fetchone()[0] == period["id"]
+    c.execute("INSERT INTO series_period (id, series_id, starts_on) VALUES (9, 1, '2026-05-01')")
+    c.execute("INSERT INTO rule (series_id, period_id, game_name) VALUES (1, 9, 'Smash Ultimate')")  # allowed now
+    c.close()

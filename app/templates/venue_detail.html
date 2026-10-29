@@ -6,9 +6,9 @@
 <span><a href="/venue?venue={{ v.id }}">Payments ledger</a></span></div>
 {% if v.notes %}<p>{{ v.notes }}</p>{% endif %}
 <h2>Series <span class="n">· {{ series|length }}</span></h2>
-<table class="sortable"><thead><tr><th>Series</th><th class="r">Tournaments</th><th>Last</th><th class="r">Owed to venue</th><th class="r">Paid to venue</th></tr></thead><tbody>
-{% for s in series %}<tr><td>{{ m.series(s.id, s.name, s.code) }} <span class="mut">{{ s.name }}</span></td><td class="r">{{ s.n }}</td><td>{{ s.last_date or "" }}</td>{{ m.mtd(s.venue_owed, "warn") }}{{ m.mtd(s.venue_paid, "ok") }}</tr>
-{% else %}<tr><td colspan="5" class="mut">No series use this venue.</td></tr>{% endfor %}</tbody></table>
+<table class="sortable"><thead><tr><th>Series</th><th>Here</th><th class="r">Tournaments</th><th>Last</th><th class="r">Owed to venue</th><th class="r">Paid to venue</th></tr></thead><tbody>
+{% for s in series %}<tr><td>{{ m.series(s.id, s.name, s.code) }} <span class="mut">{{ s.name }}</span></td><td>{{ "from " ~ s.here_from if s.here_from else "from the start" }}</td><td class="r">{{ s.n }}</td><td>{{ s.last_date or "" }}</td>{{ m.mtd(s.venue_owed, "warn") }}{{ m.mtd(s.venue_paid, "ok") }}</tr>
+{% else %}<tr><td colspan="6" class="mut">No series use this venue.</td></tr>{% endfor %}</tbody></table>
 <h2>Tournaments <span class="n">· {{ tournaments|length }}</span></h2>
 <div class="tw"><table class="sortable"><thead><tr><th>Date</th><th>Tournament</th><th>Series</th><th class="r">Attendees</th><th class="r">Venue</th><th>Status</th><th></th></tr></thead><tbody>
 {% for t in tournaments %}<tr><td>{{ t.start_date }}</td><td>{{ m.tournament(t.id, t.name) }}{% if t.venue_id %} <span class="tag">one-off</span>{% endif %}</td><td>{{ m.series(t.series_id, t.series_name, t.series_code) }}</td>

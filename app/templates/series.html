@@ -5,7 +5,7 @@
 <h1>{{ s.name }} <span class="tag">{{ s.code }}</span> <span class="tag">{{ "tracked" if s.tracked else "not tracked" }}</span></h1>
 {% if sync_status %}<div class="strip {{ 'err' if sync_status.state == 'error' }}">{{ sync_status.message }}</div>{% endif %}
 <div class="summary"><span><b>{{ s.n }}</b> tournaments</span><span><b>{{ s.events }}</b> events</span><span><b class="warn">{{ s.owed|money }}</b> owed</span><span><b class="ok">{{ s.paid|money }}</b> paid</span>
-{% if s.venue_id %}<span>venue: {{ m.venue(s.venue_id, s.venue) }}</span>{% endif %}<span><b class="warn">{{ s.venue_owed|money }}</b> owed to venue</span><span><b class="ok">{{ s.venue_paid|money }}</b> paid to venue</span>
+{% if current and current.venue_id %}<span>venue: {{ m.venue(current.venue_id, current.venue) }}</span>{% endif %}<span><b class="warn">{{ s.venue_owed|money }}</b> owed to venue</span><span><b class="ok">{{ s.venue_paid|money }}</b> paid to venue</span>
 <span>last synced {{ (s.last_synced or "never")[:16] }}</span></div>
 <div class="toolbar"><form class="inline" method="post" action="/series/{{ s.id }}/sync"><button>Import / sync now</button></form>
 <form class="inline" method="post" action="/series/{{ s.id }}/track"><button class="sec">{{ "Stop tracking" if s.tracked else "Track this series" }}</button></form></div>
@@ -21,13 +21,33 @@
 <form method="post" action="/series/{{ s.id }}/tournaments" class="toolbar">
 <label>Add a tournament by parry.gg link<input name="link" placeholder="https://parry.gg/friday-night-brawl-90-abcdef12" size="55" required></label><button>Add</button></form>
 
+{% macro since(p) %}{{ "from " ~ p.starts_on if p.starts_on else "from the start" }}{% endmacro %}
+<h2>Terms over time <span class="n">· {{ periods|length }}</span></h2>
+<table><thead><tr><th>From</th><th>Venue</th><th>Entry fee ($)</th><th class="r">Tournaments</th><th class="r">Game rules</th><th>Note</th><th></th></tr></thead><tbody>
+{% for p in periods %}<tr>
+<td><form id="period-{{ p.id }}" method="post" action="/periods/{{ p.id }}"></form>{% if p.starts_on %}<input type="date" name="starts_on" form="period-{{ p.id }}" value="{{ p.starts_on }}" required>{% else %}the start{% endif %}</td>
+<td><select name="venue_id" form="period-{{ p.id }}"><option value="">No venue</option>{% for v in venues %}<option value="{{ v.id }}" {{ "selected" if v.id == p.venue_id }}>{{ v.name }}</option>{% endfor %}</select></td>
+<td><input name="entry_fee" form="period-{{ p.id }}" value="{{ '%.2f' % (p.entry_fee_cents / 100) }}" size="6"></td>
+<td class="r">{{ p.tournaments }}</td><td class="r">{{ p.rules }}</td>
+<td><input name="note" form="period-{{ p.id }}" value="{{ p.note }}" placeholder="e.g. moved venue"></td>
+<td><button form="period-{{ p.id }}" class="sec">Save</button>
+{% if p.id == shown.id %}<span class="tag">rules shown below</span>{% else %}<a href="?period={{ p.id }}#rules">show rules</a>{% endif %}
+{% if p.id == current.id %}<span class="tag">current</span>{% endif %}
+{% if p.starts_on %}<form class="inline" method="post" action="/periods/{{ p.id }}/delete"><button class="sec">Delete</button></form>{% endif %}</td></tr>{% endfor %}</tbody>
+<tfoot><tr><td><form id="period-new" method="post" action="/series/{{ s.id }}/periods"></form><input type="date" name="starts_on" form="period-new" required title="New terms start on"></td>
+<td><select name="venue_id" form="period-new"><option value="">No venue</option>{% for v in venues %}<option value="{{ v.id }}" {{ "selected" if current and v.id == current.venue_id }}>{{ v.name }}</option>{% endfor %}</select></td>
+<td><input name="entry_fee" form="period-new" value="{{ '%.2f' % ((current.entry_fee_cents if current else 0) / 100) }}" size="6"></td>
+<td colspan="2" class="mut">game rules are copied</td><td><input name="note" form="period-new" placeholder="e.g. moved venue"></td>
+<td><button form="period-new">Start new terms</button></td></tr></tfoot></table>
+<p class="help">Each tournament uses the terms (venue, entry fee and game payout rules) in effect on its date, so a move to a new venue or a price change doesn't reprice earlier tournaments. Newly synced tournaments get the latest terms. Starting new terms copies the game rules in effect on that date; edit them below. Payouts already marked paid are never changed.</p>
+
 <h2>Games <span class="n">· {{ games|length }}</span></h2>
-<table class="sortable"><thead><tr><th>Game</th><th class="r">Events</th><th class="r">Tournaments</th><th class="r">Entrants</th><th class="r">Owed</th><th class="r">Paid</th><th>Rule</th></tr></thead><tbody>
+<table class="sortable"><thead><tr><th>Game</th><th class="r">Events</th><th class="r">Tournaments</th><th class="r">Entrants</th><th class="r">Owed</th><th class="r">Paid</th><th>Rule ({{ since(shown) }})</th></tr></thead><tbody>
 {% for g in games %}<tr><td>{{ m.game(g.game_name) }}</td><td class="r">{{ g.events }}</td><td class="r">{{ g.tournaments }}</td><td class="r">{{ g.entrants }}</td>{{ m.mtd(g.owed, "warn") }}{{ m.mtd(g.paid, "ok") }}
 <td>{% if game_rules.get(g.game_name) %}{{ describe_rule(game_rules[g.game_name]) }}{% else %}<span class="warn">no rule: no payouts</span>{% endif %}</td></tr>
 {% else %}<tr><td colspan="7" class="mut">No events yet.</td></tr>{% endfor %}</tbody></table>
 
-<h2>Payout rules <span class="n">· {{ rules|length }}</span></h2>
+<h2 id="rules">Payout rules <span class="n">· terms {{ since(shown) }} · {{ rules|length }}</span></h2>
 <table><thead><tr><th>Applies to</th><th class="r">Bracket fee</th><th class="r">Places</th><th class="r">Fixed pool</th><th class="r">% bracket fees</th><th class="r">% entry fees</th><th>Split %</th><th></th></tr></thead><tbody>
 {% for r in rules %}<tr><td>{% if r.event_id %}Event: {{ m.tournament(r.tournament_id, r.tournament_name) }} › {{ m.event(r.event_id, r.event_name) }}{% else %}{{ m.game(r.game_name) }}{% endif %}</td>
 <td class="r">{{ r.bracket_fee_cents|money }}</td><td class="r">{{ r.payout_places }}</td><td class="r">{{ r.fixed_pool_cents|money }}</td>
@@ -35,7 +55,7 @@
 <td><form class="inline" method="post" action="/rules/{{ r.id }}/delete"><button class="sec">Delete</button></form></td></tr>
 {% else %}<tr><td colspan="8" class="mut">No rules yet. Events without a rule produce no payouts.</td></tr>{% endfor %}
 </tbody>
-<tfoot><tr><td><form id="rule-form" method="post" action="/series/{{ s.id }}/rules"></form>
+<tfoot><tr><td><form id="rule-form" method="post" action="/series/{{ s.id }}/rules"><input type="hidden" name="period_id" value="{{ shown.id if shown }}"></form>
 <select name="game_name" form="rule-form"><option value="">(game, or pick an event below)</option>{% for g in games %}<option>{{ g.game_name }}</option>{% endfor %}</select>
 <select name="event_id" form="rule-form"><option value="">single-event override: none</option>{% for e in events %}<option value="{{ e.id }}">{{ e.tname }}: {{ e.name }}</option>{% endfor %}</select></td>
 <td><input name="bracket_fee" form="rule-form" value="0" size="5" title="Bracket fee ($)"></td>
@@ -45,7 +65,7 @@
 <td><input name="entry_fee_share_pct" form="rule-form" value="0" size="4" title="% of entry fees to pool"></td>
 <td><input name="splits" form="rule-form" value="50,30,20" size="12" title="Split % by place"></td>
 <td><button form="rule-form">Save rule</button></td></tr></tfoot></table>
-<p class="help">The bottom row adds a rule: saving replaces any rule for the same game or event and recalculates unpaid payouts. Payouts already marked paid are left alone and flagged if the maths now differs. A single-event rule overrides the game rule.</p>
+<p class="help">The bottom row adds a rule to the terms {{ since(shown) }}: saving replaces any rule for the same game (or event) and recalculates unpaid payouts. Payouts already marked paid are left alone and flagged if the maths now differs. A single-event rule overrides the game rule, whatever the terms.</p>
 
 <h2>Settings</h2>
 <form method="post" action="/series/{{ s.id }}/settings"><table class="kv">
@@ -53,9 +73,6 @@
 <tr><th>Code (three letters, used in links and tables)</th><td><input name="code" value="{{ s.code }}" maxlength="3" size="4" pattern="[A-Za-z]{3}" style="text-transform:uppercase"></td></tr>
 <tr><th>Custom slug (quick link shared by the series)</th><td><input name="custom_slug" value="{{ s.custom_slug }}"></td></tr>
 <tr><th>Name pattern (fallback)</th><td><input name="pattern" value="{{ s.pattern }}"></td></tr>
-<tr><th>Entry fee ($, whole tournament)</th><td><input name="entry_fee" value="{{ '%.2f' % (s.entry_fee_cents / 100) }}" size="8"></td></tr>
-<tr><th>Venue</th><td><select name="venue_id"><option value="">No venue</option>{% for v in venues %}<option value="{{ v.id }}" {{ "selected" if v.id == s.venue_id }}>{{ v.name }}</option>{% endfor %}</select>
-{% if s.venue_id %} {{ m.venue(s.venue_id, "view venue") }}{% endif %} <a href="/venues">add a venue</a></td></tr>
 <tr><th></th><td><button>Save settings</button></td></tr></table></form>
-<p class="help">The venue's cut is set on its <a href="/venues">venue page</a>. It is a separate payable per tournament (see the <a href="/venue">venue payments</a> ledger) and does not change the prize pool. A tournament can be held at a different venue, use a custom cut, or have no venue.</p>
+<p class="help">The venue and entry fee are part of the terms above. The venue's cut is set on its <a href="/venues">venue page</a>. It is a separate payable per tournament (see the <a href="/venue">venue payments</a> ledger) and does not change the prize pool. A tournament can be held at a different venue, use a custom cut, or have no venue.</p>
 {% endblock %}

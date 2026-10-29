@@ -13,6 +13,35 @@ def now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+# --- periods ---------------------------------------------------------------
+
+def period_for(conn, series_id: int, date: str | None):
+    """The series period in effect on `date` (the latest one when there is no date)."""
+    return conn.execute("""SELECT * FROM series_period WHERE series_id=? AND (COALESCE(?, '')='' OR starts_on <= ?)
+                           ORDER BY starts_on DESC LIMIT 1""", (series_id, date, date)).fetchone()
+
+
+def assign_periods(conn, series_id: int):
+    """Point each tournament of the series at the period in effect on its date."""
+    conn.execute("""UPDATE tournament SET period_id=(
+                        SELECT p.id FROM series_period p WHERE p.series_id=tournament.series_id
+                        AND (COALESCE(tournament.start_date, '')='' OR p.starts_on <= tournament.start_date)
+                        ORDER BY p.starts_on DESC LIMIT 1) WHERE series_id=?""", (series_id,))
+
+
+def create_period(conn, series_id: int, starts_on: str = "", venue_id=None, entry_fee_cents: int = 0,
+                  note: str = "", copy_rules_from: int | None = None) -> int:
+    period_id = conn.execute("""INSERT INTO series_period (series_id, starts_on, venue_id, entry_fee_cents, note)
+                                VALUES (?,?,?,?,?)""", (series_id, starts_on, venue_id, entry_fee_cents, note)).lastrowid
+    if copy_rules_from is not None:
+        conn.execute("""INSERT INTO rule (series_id, period_id, game_name, bracket_fee_cents, payout_places,
+                         fixed_pool_cents, bracket_fee_pool_pct, entry_fee_share_pct, splits)
+                         SELECT series_id, ?, game_name, bracket_fee_cents, payout_places, fixed_pool_cents,
+                         bracket_fee_pool_pct, entry_fee_share_pct, splits FROM rule
+                         WHERE period_id=? AND event_id IS NULL""", (period_id, copy_rules_from))
+    return period_id
+
+
 # --- rules -----------------------------------------------------------------
 
 def rule_from_row(row) -> Rule:
@@ -22,30 +51,30 @@ def rule_from_row(row) -> Rule:
         entry_fee_share_pct=Decimal(row["entry_fee_share_pct"]), splits=splits_from_json(row["splits"]))
 
 
-def resolve_rule(conn, series_id: int, event_id: str, game_name: str):
-    """Event override beats the series+game rule. Returns a Rule or None."""
-    row = conn.execute("SELECT * FROM rule WHERE series_id=? AND event_id=?", (series_id, event_id)).fetchone()
-    row = row or conn.execute("SELECT * FROM rule WHERE series_id=? AND game_name=? AND event_id IS NULL",
-                              (series_id, game_name)).fetchone()
+def resolve_rule(conn, period_id: int | None, event_id: str, game_name: str):
+    """Event override beats the game rule of the tournament's period. Returns a Rule or None."""
+    row = conn.execute("SELECT * FROM rule WHERE event_id=?", (event_id,)).fetchone()
+    row = row or conn.execute("SELECT * FROM rule WHERE period_id=? AND game_name=? AND event_id IS NULL",
+                              (period_id, game_name)).fetchone()
     return rule_from_row(row) if row else None
 
 
 def event_pool(conn, event_id: str):
     """Returns (rule, pool_cents, entrants, attendees, entry_fee) or None when the event has no rule."""
-    ev = conn.execute("""SELECT e.*, t.series_id, t.excluded, t.num_attendees, t.entry_fee_cents AS t_fee,
-                                s.entry_fee_cents AS s_fee
+    ev = conn.execute("""SELECT e.*, t.series_id, t.period_id, t.excluded, t.num_attendees, t.entry_fee_cents AS t_fee,
+                                p.entry_fee_cents AS p_fee
                          FROM event e JOIN tournament t ON t.id=e.tournament_id
-                         LEFT JOIN series s ON s.id=t.series_id WHERE e.id=?""", (event_id,)).fetchone()
+                         LEFT JOIN series_period p ON p.id=t.period_id WHERE e.id=?""", (event_id,)).fetchone()
     if not ev or ev["series_id"] is None or ev["excluded"]:
         return None
-    rule = resolve_rule(conn, ev["series_id"], event_id, ev["game_name"])
+    rule = resolve_rule(conn, ev["period_id"], event_id, ev["game_name"])
     if rule is None:
         return None
     entrants = conn.execute("SELECT COUNT(*) FROM event_entry_c WHERE event_id=?", (event_id,)).fetchone()[0] \
         or ev["entrant_count"]
     attendees = conn.execute("SELECT COUNT(*) FROM tournament_entry_c WHERE tournament_id=?",
                              (ev["tournament_id"],)).fetchone()[0] or ev["num_attendees"]
-    fee = ev["t_fee"] if ev["t_fee"] is not None else (ev["s_fee"] or 0)
+    fee = ev["t_fee"] if ev["t_fee"] is not None else (ev["p_fee"] or 0)
     return rule, pool_cents(rule, entrants, attendees, fee), entrants, attendees, fee
 
 
@@ -122,14 +151,14 @@ def recompute_event(conn, event_id: str):
 def venue_inputs(conn, tournament_id: str):
     """Everything the venue cut depends on, or None when this tournament has no venue.
 
-    The venue is the tournament's own pick, else its series' venue; a "custom" tournament uses its own cut there.
+    The venue is the tournament's own pick, else its period's venue; a "custom" tournament uses its own cut there.
     Returns a dict: venue_id, venue_name, cut, attendees, entry_fee, entry_collected, bracket_collected, unruled
     (names of events with no payout rule, whose bracket fee is therefore unknown and counted as $0).
     """
     t = conn.execute("""SELECT t.*, v.id AS v_id, v.name AS v_name, v.flat_cents AS v_flat, v.entry_pct AS v_entry,
-                               v.bracket_pct AS v_bracket, s.entry_fee_cents AS s_fee
-                        FROM tournament t LEFT JOIN series s ON s.id=t.series_id
-                        LEFT JOIN venue v ON v.id=COALESCE(t.venue_id, s.venue_id) WHERE t.id=?""",
+                               v.bracket_pct AS v_bracket, p.entry_fee_cents AS p_fee
+                        FROM tournament t LEFT JOIN series_period p ON p.id=t.period_id
+                        LEFT JOIN venue v ON v.id=COALESCE(t.venue_id, p.venue_id) WHERE t.id=?""",
                      (tournament_id,)).fetchone()
     if not t or t["series_id"] is None or t["excluded"] or t["venue_mode"] == "none":
         return None
@@ -141,10 +170,10 @@ def venue_inputs(conn, tournament_id: str):
         cut = VenueCut(t["v_flat"], Decimal(t["v_entry"]), Decimal(t["v_bracket"]))
     attendees = conn.execute("SELECT COUNT(*) FROM tournament_entry_c WHERE tournament_id=?",
                              (tournament_id,)).fetchone()[0] or t["num_attendees"]
-    fee = t["entry_fee_cents"] if t["entry_fee_cents"] is not None else (t["s_fee"] or 0)
+    fee = t["entry_fee_cents"] if t["entry_fee_cents"] is not None else (t["p_fee"] or 0)
     bracket, unruled = 0, []
     for e in conn.execute("SELECT * FROM event WHERE tournament_id=?", (tournament_id,)).fetchall():
-        rule = resolve_rule(conn, t["series_id"], e["id"], e["game_name"])
+        rule = resolve_rule(conn, t["period_id"], e["id"], e["game_name"])
         if rule is None:
             unruled.append(e["name"])
             continue
@@ -183,14 +212,15 @@ def recompute_venue(conn, tournament_id: str):
 
 def recompute_venue_tournaments(conn, venue_id: int):
     """After a venue's cut changes: every tournament held there, plus any whose payable names it."""
-    for t in conn.execute("""SELECT t.id FROM tournament t LEFT JOIN series s ON s.id=t.series_id
-                             WHERE COALESCE(t.venue_id, s.venue_id)=?
+    for t in conn.execute("""SELECT t.id FROM tournament t LEFT JOIN series_period p ON p.id=t.period_id
+                             WHERE COALESCE(t.venue_id, p.venue_id)=?
                              UNION SELECT tournament_id FROM venue_payment WHERE venue_id=?""",
                           (venue_id, venue_id)).fetchall():
         recompute_venue(conn, t[0])
 
 
 def recompute_series(conn, series_id: int):
+    assign_periods(conn, series_id)
     for r in conn.execute("SELECT e.id FROM event e JOIN tournament t ON t.id=e.tournament_id WHERE t.series_id=?",
                           (series_id,)).fetchall():
         recompute_event(conn, r["id"])

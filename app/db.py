@@ -22,12 +22,23 @@ CREATE TABLE IF NOT EXISTS series (
     tracked INTEGER NOT NULL DEFAULT 0,
     entry_fee_cents INTEGER NOT NULL DEFAULT 0,
     last_synced TEXT,
+    -- legacy: the venue and entry fee now belong to series_period (_migrate_periods copies them over)
     venue_id INTEGER REFERENCES venue(id) ON DELETE SET NULL,
     -- legacy per-series venue, moved into the venue table by _migrate_venues and no longer read
     venue_name TEXT NOT NULL DEFAULT '',
     venue_flat_cents INTEGER NOT NULL DEFAULT 0,
     venue_entry_pct TEXT NOT NULL DEFAULT '0',
     venue_bracket_pct TEXT NOT NULL DEFAULT '0'
+);
+-- A series' terms (venue, entry fee, payout rules) from a date on; starts_on '' is "from the beginning".
+CREATE TABLE IF NOT EXISTS series_period (
+    id INTEGER PRIMARY KEY,
+    series_id INTEGER NOT NULL REFERENCES series(id) ON DELETE CASCADE,
+    starts_on TEXT NOT NULL DEFAULT '',
+    venue_id INTEGER REFERENCES venue(id) ON DELETE SET NULL,
+    entry_fee_cents INTEGER NOT NULL DEFAULT 0,
+    note TEXT NOT NULL DEFAULT '',
+    UNIQUE (series_id, starts_on)
 );
 CREATE TABLE IF NOT EXISTS tournament (
     id TEXT PRIMARY KEY,
@@ -39,6 +50,7 @@ CREATE TABLE IF NOT EXISTS tournament (
     excluded INTEGER NOT NULL DEFAULT 0,
     manual INTEGER NOT NULL DEFAULT 0,
     entry_fee_cents INTEGER,
+    period_id INTEGER REFERENCES series_period(id) ON DELETE SET NULL,  -- kept current by sync.assign_periods
     venue_mode TEXT NOT NULL DEFAULT 'series',
     venue_id INTEGER REFERENCES venue(id) ON DELETE SET NULL,
     venue_flat_cents INTEGER NOT NULL DEFAULT 0,
@@ -54,9 +66,11 @@ CREATE TABLE IF NOT EXISTS event (
     completed INTEGER NOT NULL DEFAULT 1,
     slug TEXT NOT NULL DEFAULT ''
 );
+-- Game rules belong to a period; single-event overrides have event_id set and no period.
 CREATE TABLE IF NOT EXISTS rule (
     id INTEGER PRIMARY KEY,
     series_id INTEGER NOT NULL REFERENCES series(id) ON DELETE CASCADE,
+    period_id INTEGER REFERENCES series_period(id) ON DELETE CASCADE,
     game_name TEXT NOT NULL DEFAULT '',
     event_id TEXT REFERENCES event(id) ON DELETE CASCADE,
     bracket_fee_cents INTEGER NOT NULL DEFAULT 0,
@@ -65,7 +79,7 @@ CREATE TABLE IF NOT EXISTS rule (
     bracket_fee_pool_pct TEXT NOT NULL DEFAULT '0',
     entry_fee_share_pct TEXT NOT NULL DEFAULT '0',
     splits TEXT NOT NULL DEFAULT '["100"]',
-    UNIQUE (series_id, game_name, event_id)
+    UNIQUE (period_id, game_name, event_id)
 );
 CREATE TABLE IF NOT EXISTS player (
     id TEXT PRIMARY KEY,
@@ -161,6 +175,7 @@ ADDED_COLUMNS = {
         "slug": "TEXT NOT NULL DEFAULT ''",
     },
     "tournament": {
+        "period_id": "INTEGER REFERENCES series_period(id) ON DELETE SET NULL",
         "venue_mode": "TEXT NOT NULL DEFAULT 'series'",
         "venue_id": "INTEGER REFERENCES venue(id) ON DELETE SET NULL",
         "venue_flat_cents": "INTEGER NOT NULL DEFAULT 0",
@@ -216,6 +231,33 @@ def _migrate_venues(conn):
                         WHERE t.id=venue_payment.tournament_id) WHERE venue_id IS NULL""")
 
 
+RULE_COPY = ("id, series_id, game_name, event_id, bracket_fee_cents, payout_places, fixed_pool_cents, "
+             "bracket_fee_pool_pct, entry_fee_share_pct, splits")
+
+
+def _migrate_periods(conn):
+    """Give each series a first period holding its venue and entry fee, and move its game rules into it.
+
+    The rule table is rebuilt the first time (SQLite can't change a unique constraint in place).
+    """
+    if "period_id" not in {r["name"] for r in conn.execute("PRAGMA table_info(rule)")}:
+        ddl = SCHEMA[SCHEMA.index("CREATE TABLE IF NOT EXISTS rule"):]
+        ddl = ddl[:ddl.index(");") + 2].replace("IF NOT EXISTS rule", "rule_new")
+        conn.execute(ddl)
+        conn.execute(f"INSERT INTO rule_new ({RULE_COPY}) SELECT {RULE_COPY} FROM rule")
+        conn.execute("DROP TABLE rule")
+        conn.execute("ALTER TABLE rule_new RENAME TO rule")
+    for s in conn.execute("""SELECT id, venue_id, entry_fee_cents FROM series
+                             WHERE id NOT IN (SELECT series_id FROM series_period)""").fetchall():
+        period_id = conn.execute("INSERT INTO series_period (series_id, venue_id, entry_fee_cents) VALUES (?,?,?)",
+                                 (s["id"], s["venue_id"], s["entry_fee_cents"])).lastrowid
+        conn.execute("UPDATE rule SET period_id=? WHERE series_id=? AND event_id IS NULL AND period_id IS NULL",
+                     (period_id, s["id"]))
+        conn.execute("UPDATE series SET venue_id=NULL WHERE id=?", (s["id"],))
+        conn.execute("""UPDATE tournament SET period_id=? WHERE series_id=? AND period_id IS NULL""",
+                     (period_id, s["id"]))
+
+
 def init():
     with session() as conn:
         conn.executescript(SCHEMA)
@@ -223,3 +265,4 @@ def init():
         conn.executescript(VIEWS)
         _backfill_series_codes(conn)
         _migrate_venues(conn)
+        _migrate_periods(conn)

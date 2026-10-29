@@ -3,9 +3,9 @@
 {% block body %}
 <h1>{{ t.name }}{% if t.excluded %} <span class="tag">excluded</span>{% endif %}</h1>
 <div class="summary"><span>{{ t.start_date }}</span><span><b>{{ attendees|length }}</b> attendees</span><span><b>{{ events|length }}</b> events</span>
-<span>series: {{ m.series(t.series_id, t.series_name, t.series_code) }}</span><span>{{ m.parry(t.slug) }}</span></div>
+<span>series: {{ m.series(t.series_id, t.series_name, t.series_code) }}</span>{% if t.period_id %}<span><a href="/series/{{ t.series_code or t.series_id }}?period={{ t.period_id }}#rules">terms {{ "from " ~ t.period_start if t.period_start else "from the start" }}</a>{% if t.series_venue %} · {{ m.venue(t.series_venue_id, t.series_venue) }}{% endif %}</span>{% endif %}<span>{{ m.parry(t.slug) }}</span></div>
 <form method="post" action="/tournaments/{{ t.id }}/entry-fee" class="toolbar">
-<label>Entry fee override ($, blank = series fee {{ (t.series_fee or 0)|money }})<input name="entry_fee" value="{{ '' if t.entry_fee_cents is none else '%.2f' % (t.entry_fee_cents / 100) }}" size="8"></label>
+<label>Entry fee override ($, blank = the series' fee at the time, {{ (t.series_fee or 0)|money }})<input name="entry_fee" value="{{ '' if t.entry_fee_cents is none else '%.2f' % (t.entry_fee_cents / 100) }}" size="8"></label>
 <button class="sec">Save</button></form>
 {% if venue %}<h2>Venue{% if venue.info.venue_id %} <span class="n">· {{ m.venue(venue.info.venue_id, venue.info.venue_name) }}</span>{% endif %}</h2>
 <table class="kv">

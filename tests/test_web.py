@@ -113,8 +113,13 @@ def test_inline_payment_returns_to_page_but_only_locally(seeded):
 
 
 def settings(**kw):
-    base = {"name": "FNB", "custom_slug": "fnb", "pattern": "", "entry_fee": "5", "venue_id": ""}
+    base = {"name": "FNB", "custom_slug": "fnb", "pattern": ""}
     return {**base, **kw}
+
+
+def set_terms(client, period_id=1, **kw):
+    """Venue and entry fee of a series' terms (the first ones by default)."""
+    return client.post(f"/periods/{period_id}", data={"venue_id": "1", "entry_fee": "5", **kw})
 
 
 def add_venue(client, **kw):
@@ -123,10 +128,10 @@ def add_venue(client, **kw):
 
 def test_venue_flow(seeded):
     assert "Venue % of entry fees must be between 0 and 100" in add_venue(seeded, entry_pct="150").text
-    assert "Unknown venue" in seeded.post("/series/1/settings", data=settings(venue_id="1")).text
+    assert "Unknown venue" in set_terms(seeded).text
     add_venue(seeded)
     assert seeded.get("/venue").text.count("Mark paid") == 0
-    assert seeded.post("/series/1/settings", data=settings(venue_id="1")).status_code == 200
+    assert set_terms(seeded).status_code == 200
     page = seeded.get("/venue").text
     assert "The Hall" in page and "$24.00" in page and page.count("Mark paid") == 1
     for url in ("/", "/series/1", "/tournaments/t1", "/venue?status=owed&series=1"):
@@ -146,7 +151,7 @@ def test_venue_flow(seeded):
 
 def test_tournament_venue_override(seeded):
     add_venue(seeded)
-    seeded.post("/series/1/settings", data=settings(venue_id="1"))
+    set_terms(seeded)
     seeded.post("/tournaments/t1/venue", data={"venue_mode": "none"})
     assert "No venue payments" in seeded.get("/venue").text
     seeded.post("/tournaments/t1/venue", data={"venue_mode": "custom", "venue_flat": "7"})
@@ -181,7 +186,7 @@ def test_init_upgrades_an_old_schema(tmp_path, monkeypatch):
 
 def test_dashboard_shows_total_owed_to_players_and_venues(seeded):
     add_venue(seeded)
-    seeded.post("/series/1/settings", data=settings(venue_id="1"))
+    set_terms(seeded)
     page = seeded.get("/").text
     # 4 player payouts ($26 pool) + venue payable ($24.00)
     assert "Total owed" in page and "$50.00" in page and "$26.00 to players + $24.00 to venues" in page
@@ -279,7 +284,7 @@ def test_venues_pages_and_one_off_venue(seeded):
     add_venue(seeded)
     assert "already a venue called" in add_venue(seeded, name="the hall").text
     add_venue(seeded, name="Pop-up Bar", flat="50", entry_pct="0", bracket_pct="0")
-    seeded.post("/series/1/settings", data=settings(venue_id="1"))
+    set_terms(seeded)
     page = seeded.get("/venues").text
     assert 'href="/venues/1"' in page and 'href="/venues/2"' in page and "$24.00" in page
     page = seeded.get("/venues/1").text
@@ -295,7 +300,7 @@ def test_venues_pages_and_one_off_venue(seeded):
 
 def test_editing_a_venue_reprices_unpaid_but_not_paid(seeded):
     add_venue(seeded)
-    seeded.post("/series/1/settings", data=settings(venue_id="1"))
+    set_terms(seeded)
     seeded.post("/venue/t1/paid")
     seeded.post("/venues/1", data={"name": "The Hall", "flat": "30", "entry_pct": "10", "bracket_pct": "10"})
     page = seeded.get("/venues/1").text
@@ -304,3 +309,38 @@ def test_editing_a_venue_reprices_unpaid_but_not_paid(seeded):
     assert "$34.00" in seeded.get("/venue?status=owed").text
     assert "Enter a venue name" in seeded.post("/venues/1", data={"name": " "}).text
     assert seeded.get("/venues/99").status_code == 404
+
+
+def test_series_terms_over_time(seeded):
+    add_venue(seeded)
+    set_terms(seeded)  # The Hall from the start
+    add_venue(seeded, name="New Place", flat="30", entry_pct="0", bracket_pct="0")
+    assert "is not a date" in seeded.post("/series/1/periods", data={"starts_on": "next week"}).text
+    assert "first terms can&#39;t be deleted" in seeded.post("/periods/1/delete").text
+
+    # the series moves before t1 (2026-01-01): t1 now falls under the new terms, with copied rules
+    r = seeded.post("/series/1/periods", data={"starts_on": "2025-12-01", "venue_id": "2", "entry_fee": "8",
+                                               "note": "moved"})
+    assert str(r.url).endswith("/series/FNB?period=2") and "terms from 2025-12-01" in r.text
+    assert "Terms already start on 2025-12-01" in seeded.post(
+        "/series/1/periods", data={"starts_on": "2025-12-01"}).text
+    assert "New Place" in seeded.get("/tournaments/t1").text and "$30.00" in seeded.get("/venue").text
+    assert "$26.00" in seeded.get("/events/e1").text  # same rule as before, copied into the new terms
+
+    # change only the new terms' rule; the first terms keep theirs
+    seeded.post("/series/1/rules", data={"period_id": "2", "game_name": "Smash Ultimate", "bracket_fee": "5",
+                                         "payout_places": 1, "fixed_pool": "0", "splits": "100"})
+    assert seeded.get("/payouts").text.count("Mark paid") == 0  # the new rule's pool is $0
+    page = seeded.get("/series/FNB?period=1").text
+    assert "terms from the start" in page and "50 / 30 / 20" in page
+    assert "1 paid (100)" in seeded.get("/games/Smash%20Ultimate").text
+
+    # moving the new terms after t1's date gives t1 its old venue and rule back
+    seeded.post("/periods/2", data={"starts_on": "2026-06-01", "venue_id": "2", "entry_fee": "8"})
+    assert "The Hall" in seeded.get("/tournaments/t1").text and "$26.00" in seeded.get("/events/e1").text
+    assert seeded.get("/payouts").text.count("Mark paid") == 4
+    assert "is not a date" in seeded.post("/periods/2", data={"starts_on": ""}).text
+    seeded.post("/periods/2/delete")
+    assert 'action="/periods/2"' not in seeded.get("/series/FNB").text
+    assert seeded.get("/periods/2/delete").status_code == 405
+    assert seeded.post("/periods/2/delete").status_code == 404

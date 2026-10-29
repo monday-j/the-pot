@@ -6,7 +6,7 @@
 <span><b class="warn">{{ events|sum(attribute="e.owed")|money }}</b> owed</span><span><b class="ok">{{ events|sum(attribute="e.paid")|money }}</b> paid</span></div>
 <h2>Rules <span class="n">· {{ rules|length }}</span></h2>
 <table><thead><tr><th>Series</th><th>Applies to</th><th>Rule</th></tr></thead><tbody>
-{% for r in rules %}<tr><td>{{ m.series(r.series_id, r.sname, r.scode) }}</td><td>{% if r.event_id %}{{ m.event(r.event_id, r.event_name) }}{% else %}all {{ game_name }} events{% endif %}</td><td>{{ describe_rule(r) }}</td></tr>
+{% for r in rules %}<tr><td>{{ m.series(r.series_id, r.sname, r.scode) }}</td><td>{% if r.event_id %}{{ m.event(r.event_id, r.event_name) }}{% else %}all {{ game_name }} events{{ " from " ~ r.period_start if r.period_start }}{% endif %}</td><td>{{ describe_rule(r) }}</td></tr>
 {% else %}<tr><td colspan="3" class="mut">No rules for this game, so no payouts.</td></tr>{% endfor %}</tbody></table>
 <h2>Events <span class="n">· {{ events|length }}</span></h2>
 <div class="tw"><table class="sortable"><thead><tr><th>Date</th><th>Event</th><th>Tournament</th><th>Series</th><th class="r">Entrants</th><th>Winner</th><th class="r">Pool</th><th class="r">Owed</th><th class="r">Paid</th><th>Placements</th></tr></thead><tbody>

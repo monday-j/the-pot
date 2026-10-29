@@ -16,7 +16,12 @@ you've paid them and what you still owe. Local-only (no auth), SQLite, run as a 
   from the name; existing series are given one automatically on upgrade, and you can change it in the series settings.
 - **Rules** (per game, with optional single-event override): bracket fee, number of places paid, fixed pool,
   % of bracket fees into the pool, % of entry fees into the pool, and a split % per place (e.g. `50,30,20`).
-  The tournament-wide entry fee is set on the series (overridable per tournament).
+  The tournament-wide entry fee is part of the series' terms (overridable per tournament).
+- **Terms over time**: a series' venue, entry fee and game rules are dated. When something changes (e.g. the series
+  moves to a new venue), start new terms from that date on the series page: the game rules in effect then are copied
+  so only what changed needs editing. Each tournament uses the terms in effect on its date, so earlier tournaments keep
+  their old venue, fee and rules, and newly synced tournaments get the latest terms. Single-event overrides apply
+  whatever the terms. Databases from before this get one set of terms "from the start" holding their current settings.
 - **Pool** = fixed pool + bracket-fee share + entry-fee share. Ties share the combined amount of the places they occupy.
   Money is integer cents; splits are exact to the cent.
 - **Payments**: each payout starts as *owed*; mark it paid per payout or settle everything owed to a player.
@@ -28,8 +33,8 @@ you've paid them and what you still owe. Local-only (no auth), SQLite, run as a 
 - **Venues** are tracked on their own (Venues page: each venue's series, tournaments held there, owed and paid). A
   venue's cut is made of up to three parts that add together: a flat amount per tournament, a % of entry fees collected
   (fee x attendees) and a % of bracket fees collected (each event's rule bracket fee x entrants; events without a rule
-  count as $0). A series picks its venue in its settings; a tournament can be held at a different venue, use a custom
-  cut, or have no venue. The venue cut is a separate payable per tournament (it does not change the prize pool), marked
+  count as $0). A series picks its venue in its terms (see above); a tournament can be held at a different venue, use
+  a custom cut, or have no venue. The venue cut is a separate payable per tournament (it does not change the prize pool), marked
   paid on the tournament page, the venue's page or the venue payments ledger. Like player payouts, a paid amount (and
   the venue it was paid to) is never changed by a re-sync or a venue edit; a changed calculation shows a `≠` marker.
   Databases from before venues existed get one venue per distinct series venue name and cut on upgrade.

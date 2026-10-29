@@ -151,6 +151,22 @@ def test_venue_flow(seeded):
     assert seeded.post("/venue/nope/paid").status_code == 404
 
 
+def test_venues_show_in_who_is_owed(seeded):
+    add_venue(seeded)
+    set_terms(seeded)
+    page = seeded.get("/").text
+    owing = page.split("Who is owed")[1].split("Recent tournaments")[0]
+    assert '<a href="/venues/1">The Hall</a> <span class="tag">venue</span>' in owing and "$24.00" in owing
+    players = owing.count('href="/players/')
+    assert f"owed to {players} players" in page and f'<span class="n">· {players + 1}</span>' in owing
+    with db.session() as conn:  # a venue payment whose venue has gone
+        conn.execute("UPDATE venue_payment SET venue_id=NULL")
+    owing = seeded.get("/").text.split("Who is owed")[1]
+    assert '<a href="/venue?status=owed">(no venue)</a> <span class="tag">venue</span>' in owing
+    seeded.post("/venue/t1/paid")
+    assert "(no venue)" not in seeded.get("/").text
+
+
 def test_tournament_venue_override(seeded):
     add_venue(seeded)
     set_terms(seeded)

@@ -149,6 +149,8 @@ def flags_by(issues: list, key: str) -> dict:
 EVENT_SUMS = """COALESCE((SELECT SUM(amount_cents) FROM payout WHERE event_id=e.id AND status='owed'),0) AS owed,
                 COALESCE((SELECT SUM(amount_cents) FROM payout WHERE event_id=e.id AND status='paid'),0) AS paid"""
 TOURNAMENT_SUMS = """(SELECT COUNT(*) FROM event e WHERE e.tournament_id=t.id) AS events,
+    (SELECT SUM(amount_cents) FROM square_payment WHERE tournament_id=t.id AND ignored=0) AS square_taken,
+    (SELECT SUM(fee_cents) FROM square_payment WHERE tournament_id=t.id AND ignored=0) AS square_fees,
     (SELECT amount_cents FROM venue_payment WHERE tournament_id=t.id) AS venue_amount,
     (SELECT computed_cents FROM venue_payment WHERE tournament_id=t.id) AS venue_computed,
     (SELECT status FROM venue_payment WHERE tournament_id=t.id) AS venue_status,
@@ -157,6 +159,10 @@ TOURNAMENT_SUMS = """(SELECT COUNT(*) FROM event e WHERE e.tournament_id=t.id) A
     COALESCE((SELECT SUM(po.amount_cents) FROM payout po JOIN event e ON e.id=po.event_id
               WHERE e.tournament_id=t.id AND po.status='paid'),0) AS paid"""
 SERIES_SUMS = """(SELECT COUNT(*) FROM tournament t WHERE t.series_id=s.id) AS n,
+    COALESCE((SELECT SUM(sp.amount_cents) FROM square_payment sp JOIN tournament t ON t.id=sp.tournament_id
+              WHERE t.series_id=s.id AND sp.ignored=0),0) AS square_taken,
+    COALESCE((SELECT SUM(sp.fee_cents) FROM square_payment sp JOIN tournament t ON t.id=sp.tournament_id
+              WHERE t.series_id=s.id AND sp.ignored=0),0) AS square_fees,
     COALESCE((SELECT SUM(vp.amount_cents) FROM venue_payment vp JOIN tournament t ON t.id=vp.tournament_id
               WHERE t.series_id=s.id AND vp.status='owed'),0) AS venue_owed,
     COALESCE((SELECT SUM(vp.amount_cents) FROM venue_payment vp JOIN tournament t ON t.id=vp.tournament_id

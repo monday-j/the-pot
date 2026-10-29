@@ -93,6 +93,16 @@ def test_a_payment_counted_for_one_tournament_stays_there(fnb):
     assert fnb.execute("SELECT tournament_id FROM square_payment").fetchone()[0] == "t1"
 
 
+def test_a_stored_payment_is_refreshed_even_outside_its_window(fnb, monkeypatch):
+    from dataclasses import replace
+    monkeypatch.setattr(config, "TIMEZONE", "UTC")
+    square.pull_tournament(fnb, FakeSquare([pay("P1", 1000, when="2026-01-01T20:00:00Z")]), "t1")
+    fnb.execute("UPDATE tournament SET start_date='2025-12-25' WHERE id='t1'")  # t1's date changed on parry.gg
+    later = replace(pay("P1", 1000, when="2026-01-01T20:00:00Z"), fee_cents=22)
+    square.pull_series(fnb, FakeSquare([later]), 1)
+    assert tuple(fnb.execute("SELECT tournament_id, fee_cents FROM square_payment").fetchone()) == ("t1", 22)
+
+
 def test_a_second_tap_from_the_same_card_stays_unlinked(fnb):
     square.pull_tournament(fnb, FakeSquare([pay("P1", 1000, "fp-bob")]), "t1")
     square.link_payment(fnb, "P1", "u2")
@@ -399,3 +409,44 @@ def test_series_square_pull_button(client, monkeypatch):  # noqa: F811
     page = client.get("/series/FNB").text
     assert "Square, " in page and "across 2 tournaments" in page
     assert "Square payments" in client.get("/tournaments/t1").text
+
+
+def test_parse_payment_sums_processing_fees_or_leaves_them_pending():
+    base = {"id": "P", "status": "COMPLETED", "amount_money": {"amount": 1000}}
+    fees = [{"type": "INITIAL", "amount_money": {"amount": 20}}, {"type": "ADJUSTMENT", "amount_money": {"amount": 2}}]
+    assert parse_payment({**base, "processing_fee": fees}).fee_cents == 22  # as Square's sandbox reports it
+    assert parse_payment(base).fee_cents is None and parse_payment({**base, "processing_fee": []}).fee_cents is None
+
+
+def test_fees_are_filled_in_on_a_later_pull_and_reported_net(fnb):
+    from dataclasses import replace
+    first = [pay("P1", 1000, "fp-a"), pay("P2", 1000, "fp-b"), pay("P3", 600)]
+    square.pull_tournament(fnb, FakeSquare(first), "t1")
+    r = square.reconcile(fnb, "t1")
+    assert (r["taken"], r["fees"], r["net"], r["fees_pending"]) == (2600, 0, 2600, 3)
+
+    later = [replace(first[0], fee_cents=22), replace(first[1], fee_cents=22), replace(first[2], fee_cents=13)]
+    square.pull_tournament(fnb, FakeSquare(later), "t1")  # Square has added its fees since
+    fnb.execute("UPDATE square_payment SET ignored=1 WHERE id='P3'")  # not a fee: its card fee isn't counted either
+    r = square.reconcile(fnb, "t1")
+    assert (r["taken"], r["fees"], r["net"], r["fees_pending"]) == (2000, 44, 1956, 0)
+
+
+def test_fee_pages(client, monkeypatch):  # noqa: F811
+    monkeypatch.setattr(main, "GrpcParryClient", TwoNightsClient)
+    client.post("/series", data={"name": "FNB", "custom_slug": "fnb"})
+    client.post("/series/1/sync")
+    for _ in range(50):
+        if sync.status[1]["state"] != "running":
+            break
+        time.sleep(0.05)
+    monkeypatch.setenv("SQUARE_API_KEY", "tok")
+    monkeypatch.setenv("SQUARE_ENV", "sandbox")
+    from dataclasses import replace
+    fake = FakeSquare([replace(pay("P1", 1000, "fp-a"), fee_cents=22), pay("P2", 1000, "fp-b")])
+    monkeypatch.setattr(main, "HttpSquareClient", lambda: fake)
+    page = client.post("/tournaments/t1/square/pull").text
+    assert "$0.22</b> card fees" in page and "(1 pending)" in page and "$19.78</b> net" in page
+    assert ">pending<" in page and "$0.22" in page
+    page = client.get("/series/FNB").text
+    assert "$20.00</b> taken by card, <b>$0.22</b> fees" in page and "Card fees" in page

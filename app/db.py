@@ -127,6 +127,7 @@ CREATE TABLE IF NOT EXISTS square_payment (
     link TEXT NOT NULL DEFAULT 'none',
     ignored INTEGER NOT NULL DEFAULT 0,
     amount_cents INTEGER NOT NULL,
+    fee_cents INTEGER,  -- Square's processing fee; NULL until Square has added it
     created_at TEXT NOT NULL,
     source_type TEXT NOT NULL DEFAULT '',
     card_brand TEXT NOT NULL DEFAULT '',
@@ -204,6 +205,9 @@ ADDED_COLUMNS = {
     },
     "venue": {
         "square_location_id": "TEXT NOT NULL DEFAULT ''",
+    },
+    "square_payment": {
+        "fee_cents": "INTEGER",
     },
     "venue_payment": {
         "venue_id": "INTEGER REFERENCES venue(id) ON DELETE SET NULL",

@@ -54,24 +54,27 @@ def _utc(stamp: str):
     return datetime.fromisoformat(stamp.replace("Z", "+00:00"))
 
 
-def _store(conn, tournament_id: str, p, counts: dict):
-    """Insert or refresh one completed payment for a tournament. Keeps links and ignores; a payment already
-    stored against another tournament is left there."""
+def _store(conn, tournament_id: str | None, p, counts: dict):
+    """Insert a completed payment for a tournament, or refresh one already stored. Keeps links and ignores.
+
+    A stored payment stays with the tournament it was filed under (even if its time now fits another one, e.g. after a
+    date change), but its details are always refreshed: Square adds the processing fee, and refunds, later on.
+    `tournament_id` is None for a payment outside every window: refreshed if stored, otherwise skipped.
+    """
     row = conn.execute("SELECT * FROM square_payment WHERE id=?", (p.id,)).fetchone()
-    if row and row["tournament_id"] != tournament_id:
-        counts["elsewhere"] += 1
-        return
-    fields = (p.amount_cents, p.created_at, p.source_type, p.card_brand, p.last_4, p.fingerprint,
+    fields = (p.amount_cents, p.fee_cents, p.created_at, p.source_type, p.card_brand, p.last_4, p.fingerprint,
               p.cardholder_name, p.note, p.receipt_url)
     if row:
-        conn.execute("""UPDATE square_payment SET amount_cents=?, created_at=?, source_type=?, card_brand=?, last_4=?,
-                        fingerprint=?, cardholder_name=?, note=?, receipt_url=? WHERE id=?""", (*fields, p.id))
-        counts["updated"] += 1
+        conn.execute("""UPDATE square_payment SET amount_cents=?, fee_cents=?, created_at=?, source_type=?, card_brand=?,
+                        last_4=?, fingerprint=?, cardholder_name=?, note=?, receipt_url=? WHERE id=?""", (*fields, p.id))
+        counts["updated" if tournament_id in (None, row["tournament_id"]) else "elsewhere"] += 1
+        return
+    if tournament_id is None:
         return
     player = _auto_player(conn, tournament_id, p.fingerprint)
-    conn.execute("""INSERT INTO square_payment (id, tournament_id, player_id, link, amount_cents, created_at, source_type,
-                    card_brand, last_4, fingerprint, cardholder_name, note, receipt_url)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+    conn.execute("""INSERT INTO square_payment (id, tournament_id, player_id, link, amount_cents, fee_cents, created_at,
+                    source_type, card_brand, last_4, fingerprint, cardholder_name, note, receipt_url)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                  (p.id, tournament_id, player, "auto" if player else "none", *fields))
     counts["new"] += 1
     counts["linked"] += player is not None
@@ -100,9 +103,7 @@ def pull_tournaments(conn, client: SquareClient, tournament_ids) -> dict:
             if p.status != "COMPLETED" or not p.created_at:
                 continue
             when = _utc(p.created_at)
-            tid = next((w[2] for w in windows if w[0] <= when <= w[1]), None)
-            if tid is not None:
-                _store(conn, tid, p, counts)
+            _store(conn, next((w[2] for w in windows if w[0] <= when <= w[1]), None), p, counts)
     return counts
 
 
@@ -234,7 +235,9 @@ def reconcile(conn, tournament_id: str) -> dict:
                         "state": state})
     players.sort(key=lambda r: (r["state"] == "ok", r["tag"].lower()))
     expected_total, taken = sum(expected.values()), sum(p["amount_cents"] for p in counted)
+    fees = sum(p["fee_cents"] or 0 for p in counted)
     return {"payments": payments, "players": players, "expected": expected_total, "taken": taken,
+            "fees": fees, "net": taken - fees, "fees_pending": sum(1 for p in counted if p["fee_cents"] is None),
             "difference": taken - expected_total, "attendees": len(expected), "count": len(counted),
             "unlinked": sum(1 for p in counted if not p["player_id"]),
             "problems": sum(1 for r in players if r["state"] != "ok")}

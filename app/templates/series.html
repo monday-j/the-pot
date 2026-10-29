@@ -6,7 +6,7 @@
 {% if sync_status %}<div class="strip {{ 'err' if sync_status.state == 'error' }}">{{ sync_status.message }}</div>{% endif %}
 {% if square_status %}<div class="strip {{ 'err' if square_status.state == 'error' }}">Square{{ " (automatic)" if square_status.auto }}, {{ square_status.at|localtime }}: {{ square_status.message }}</div>{% endif %}
 <div class="summary"><span><b>{{ s.n }}</b> tournaments</span><span><b>{{ s.events }}</b> events</span><span><b class="warn">{{ s.owed|money }}</b> owed</span><span><b class="ok">{{ s.paid|money }}</b> paid</span>
-{% if current and current.venue_id %}<span>venue: {{ m.venue(current.venue_id, current.venue) }}</span>{% endif %}<span><b class="warn">{{ s.venue_owed|money }}</b> owed to venue</span><span><b class="ok">{{ s.venue_paid|money }}</b> paid to venue</span>
+{% if current and current.venue_id %}<span>venue: {{ m.venue(current.venue_id, current.venue) }}</span>{% endif %}<span><b class="warn">{{ s.venue_owed|money }}</b> owed to venue</span>{% if s.square_taken %}<span><b>{{ s.square_taken|money }}</b> taken by card, <b>{{ s.square_fees|money }}</b> fees</span>{% endif %}<span><b class="ok">{{ s.venue_paid|money }}</b> paid to venue</span>
 <span>last synced {{ (s.last_synced or "never")[:16] }}</span></div>
 <div class="toolbar"><form class="inline" method="post" action="/series/{{ s.id }}/sync"><button>Import / sync now</button></form>
 <form class="inline" method="post" action="/series/{{ s.id }}/square/pull"><button class="sec" {{ "disabled" if not square_setup.env }} title="{{ square_setup.error or ('Square: ' ~ square_setup.env if square_setup.env else 'Set SQUARE_API_KEY and SQUARE_ENV') }}">Pull Square payments (all tournaments)</button></form>
@@ -15,12 +15,12 @@
 {% include "_issues.html" %}
 
 <h2>Tournaments <span class="n">· {{ tournaments|length }}</span></h2>
-<div class="tw"><table class="sortable" id="tournaments"><thead><tr><th>Date</th><th>Tournament</th><th class="r">Attendees</th><th class="r">Events</th><th class="r">Pool</th><th class="r">Owed</th><th class="r">Paid</th><th class="r">Venue</th><th>Flags</th><th></th></tr></thead><tbody>
+<div class="tw"><table class="sortable" id="tournaments"><thead><tr><th>Date</th><th>Tournament</th><th class="r">Attendees</th><th class="r">Events</th><th class="r">Pool</th><th class="r">Owed</th><th class="r">Paid</th><th class="r">Venue</th><th class="r" title="Square payments, net of refunds">By card</th><th class="r">Card fees</th><th>Flags</th><th></th></tr></thead><tbody>
 {% for t in tournaments %}<tr><td>{{ t.start_date }}</td><td>{{ m.tournament(t.id, t.name) }}{% if t.manual %} <span class="tag">manual</span>{% endif %}{% if t.excluded %} <span class="tag">excluded</span>{% endif %}</td>
-<td class="r">{{ t.num_attendees }}</td><td class="r">{{ t.events }}</td>{{ m.mtd(t.pool) }}{{ m.mtd(t.owed, "warn") }}{{ m.mtd(t.paid, "ok") }}{{ m.mtd(t.venue_amount, "st-" ~ t.venue_status if t.venue_status else "") }}
+<td class="r">{{ t.num_attendees }}</td><td class="r">{{ t.events }}</td>{{ m.mtd(t.pool) }}{{ m.mtd(t.owed, "warn") }}{{ m.mtd(t.paid, "ok") }}{{ m.mtd(t.venue_amount, "st-" ~ t.venue_status if t.venue_status else "") }}{{ m.mtd(t.square_taken) }}{{ m.mtd(t.square_fees) }}
 <td>{% if t.flags %}<span class="flag">⚠ {{ t.flags }}</span>{% endif %}</td>
 <td><form class="inline" method="post" action="/tournaments/{{ t.id }}/exclude"><button class="sec">{{ "Restore" if t.excluded else "Exclude" }}</button></form></td></tr>
-{% else %}<tr><td colspan="10" class="mut">Nothing imported yet. Use "Import / sync now".</td></tr>{% endfor %}</tbody></table></div>
+{% else %}<tr><td colspan="12" class="mut">Nothing imported yet. Use "Import / sync now".</td></tr>{% endfor %}</tbody></table></div>
 <form method="post" action="/series/{{ s.id }}/tournaments" class="toolbar">
 <label>Add a tournament by parry.gg link<input name="link" placeholder="https://parry.gg/friday-night-brawl-90-abcdef12" size="55" required></label><button>Add</button></form>
 

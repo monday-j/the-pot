@@ -35,6 +35,7 @@ class SquarePayment:
     note: str = ""
     receipt_url: str = ""
     location_id: str = ""
+    fee_cents: int | None = None  # processing fees Square kept; None until Square adds them
 
 
 class SquareClient(Protocol):
@@ -66,11 +67,13 @@ def environment() -> str:
 def parse_payment(p: dict) -> SquarePayment:
     card = (p.get("card_details") or {}).get("card") or {}
     amount = (p.get("amount_money") or {}).get("amount", 0) - (p.get("refunded_money") or {}).get("amount", 0)
+    fees = p.get("processing_fee") or []  # e.g. an INITIAL fee plus an ADJUSTMENT (tax); added after the payment
     return SquarePayment(
         id=p["id"], created_at=p.get("created_at", ""), status=p.get("status", ""), amount_cents=amount,
         source_type=p.get("source_type", ""), card_brand=card.get("card_brand", ""), last_4=card.get("last_4", ""),
         fingerprint=card.get("fingerprint", ""), cardholder_name=card.get("cardholder_name", ""),
-        note=p.get("note", ""), receipt_url=p.get("receipt_url", ""), location_id=p.get("location_id", ""))
+        note=p.get("note", ""), receipt_url=p.get("receipt_url", ""), location_id=p.get("location_id", ""),
+        fee_cents=sum((f.get("amount_money") or {}).get("amount", 0) for f in fees) if fees else None)
 
 
 class HttpSquareClient:

@@ -191,3 +191,83 @@ def test_http_client_pages_and_reports_errors(monkeypatch):
     seen.clear()
     HttpSquareClient(httpx.MockTransport(handler)).list_payments("a", "b")
     assert seen[0].url.host == "connect.squareup.com"
+
+
+class Clock:
+    """A fake clock: sleeping just moves time on, and records the wait."""
+    def __init__(self):
+        self.now, self.waits = 0.0, []
+
+    def sleep(self, seconds):
+        self.waits.append(round(seconds, 3))
+        self.now += seconds
+
+    def __call__(self):
+        return self.now
+
+
+def square_with(monkeypatch, responses):
+    """An HttpSquareClient whose requests get `responses` in turn (a status code, an exception, or a JSON body)."""
+    import httpx
+    from app.square_client import HttpSquareClient
+    monkeypatch.setenv("SQUARE_API_KEY", "tok")
+    monkeypatch.setenv("SQUARE_ENV", "sandbox")
+    queue, clock, calls = list(responses), Clock(), []
+
+    def handler(request):
+        calls.append(clock.now)
+        item = queue.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        if isinstance(item, tuple):
+            status, headers = item
+            return httpx.Response(status, headers=headers, json={"errors": [{"code": "RATE_LIMITED"}]})
+        if isinstance(item, int):
+            return httpx.Response(item, json={"errors": [{"code": "RATE_LIMITED", "detail": "slow down"}]})
+        return httpx.Response(200, json=item)
+
+    return HttpSquareClient(httpx.MockTransport(handler), sleep=clock.sleep, clock=clock), clock, calls
+
+
+def test_rate_limited_requests_back_off_and_retry(monkeypatch, caplog):
+    import httpx
+    monkeypatch.setattr("random.uniform", lambda a, b: 1.0)  # no jitter, so the waits are exact
+    ok = {"payments": [{"id": "A", "status": "COMPLETED", "amount_money": {"amount": 100}}]}
+    c, clock, calls = square_with(monkeypatch, [429, 503, httpx.ConnectError("down"), ok])
+    with caplog.at_level("WARNING", logger="the_pot.square"):
+        assert [p.id for p in c.list_payments("a", "b")] == ["A"]
+    assert clock.waits == [1.0, 2.0, 4.0]  # exponential backoff between the four attempts
+    assert len(caplog.records) == 3 and "returned 429, retry 1 of 4" in caplog.text and "tok" not in caplog.text
+
+
+def test_retry_after_is_honoured(monkeypatch):
+    ok = {"payments": []}
+    c, clock, _ = square_with(monkeypatch, [(429, {"Retry-After": "7"}), ok])
+    c.list_payments("a", "b")
+    assert clock.waits == [7.0]
+
+
+def test_gives_up_after_five_rate_limited_attempts(monkeypatch):
+    from app.square_client import SquareRateLimited
+    c, clock, calls = square_with(monkeypatch, [429] * 5)
+    with pytest.raises(SquareRateLimited, match="rate limiting requests; try again in a few minutes"):
+        c.list_payments("a", "b")
+    assert len(calls) == 5 and len(clock.waits) == 4
+    assert all(0.5 * 2 ** i <= w <= 1.5 * 2 ** i for i, w in enumerate(clock.waits))  # backoff with ±50% jitter
+
+
+def test_persistent_server_errors_and_auth_errors_are_not_hidden(monkeypatch):
+    c, _, calls = square_with(monkeypatch, [503] * 5)
+    with pytest.raises(RuntimeError, match=r"Square \(sandbox\) returned 503"):
+        c.list_payments("a", "b")
+    c, _, calls = square_with(monkeypatch, [401])
+    with pytest.raises(RuntimeError, match="returned 401"):
+        c.list_payments("a", "b")
+    assert len(calls) == 1  # a bad token isn't retried
+
+
+def test_pages_are_paced(monkeypatch):
+    page = lambda pid, cursor=None: {"payments": [{"id": pid, "status": "COMPLETED"}], **({"cursor": cursor} if cursor else {})}
+    c, clock, calls = square_with(monkeypatch, [page("A", "2"), page("B", "3"), page("C")])
+    assert [p.id for p in c.list_payments("a", "b")] == ["A", "B", "C"]
+    assert [b - a for a, b in zip(calls, calls[1:])] == [0.25, 0.25]

@@ -72,7 +72,9 @@ each token is only accepted by its own Square environment (the other answers 401
 tournament page shows which environment is in use. It only reads payments (`PAYMENTS_READ`). After changing `.env`,
 recreate the container (`docker compose up -d`); a restart keeps the old values. Set `TZ` to your local time zone
 (e.g. `Australia/Hobart`) so each tournament's day is right. If you have more than one Square location, put the venue's
-location id on its venue page. The only code that talks to Square is `app/square_client.py`.
+location id on its venue page. The only code that talks to Square is `app/square_client.py`. Square publishes no
+rate limits, so requests are spaced at least 250ms apart, and a rate-limited (`429`), server-error or dropped request
+is retried up to 5 times with exponential backoff and jitter (honouring `Retry-After`). Each retry is logged.
 
 Then open http://127.0.0.1:8000. The database is `data/pot.db` (git-ignored). The app has no login, so keep it on
 localhost or a trusted network.

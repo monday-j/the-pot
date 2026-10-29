@@ -1,0 +1,27 @@
+# Test deployment: the image built from this working tree, on port 8001 with its own data.
+# Use scripts/test-deploy.sh rather than running this directly. Never pushed, never touches production.
+name: the-pot-test
+
+services:
+  pot-test:
+    build: .
+    image: the-pot:test
+    ports:
+      # All interfaces, like production: no auth, so restrict who can reach port 8001 with a firewall.
+      - "8001:8000"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      SQUARE_ENV: sandbox  # a test copy must never use a production Square token
+      TZ: ${TZ:-UTC}
+    volumes:
+      - pot-test-data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:8000/')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  pot-test-data:

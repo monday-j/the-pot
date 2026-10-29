@@ -74,6 +74,27 @@ location id on its venue page. The only code that talks to Square is `app/square
 Then open http://127.0.0.1:8000. The database is `data/pot.db` (git-ignored). The app has no login, so keep it on
 localhost or a trusted network.
 
+## Test before pushing
+
+A push to `main` deploys, so try changes locally first. `scripts/test-deploy.sh` runs the image built from your
+working tree (unpushed and uncommitted changes included) on port 8001 of this machine, with its own data volume.
+Like production it listens on all interfaces and has no login, so limit who can reach port 8001 with a firewall
+(Docker's published ports skip host firewall INPUT rules: filter them in the `DOCKER-USER` chain).
+
+```sh
+scripts/test-deploy.sh up                                  # run the tests, build, start
+POT_SERVER=homeserver scripts/test-deploy.sh snapshot      # copy the live database over SSH (read-only)
+scripts/test-deploy.sh load                                # load the newest snapshot, run the upgrade, compare totals
+scripts/test-deploy.sh down                                # stop (reset also deletes the test data)
+```
+
+`load` prints player and venue owed/paid totals before and after the upgrade and fails if they differ, so a schema
+migration that would reprice anything shows up before it reaches production. `snapshot` uses SQLite's online backup
+into the production container's `/tmp`, so the live `/data` is never written to. Set `POT_CONTAINER` if the container
+isn't found automatically, and `POT_DOCKER="sudo docker"` if the server needs it. Snapshots hold real payment records:
+they stay in `data/snapshots/` (git- and docker-ignored). Anything you do in the test copy, like marking payouts paid,
+only changes the copy. The test stack always uses the Square sandbox.
+
 ## Deploy (Docker Compose / Dockge, home server)
 
 CI builds the image on every push to `main` and publishes it to `ghcr.io/monday-j/the-pot` (private by default).

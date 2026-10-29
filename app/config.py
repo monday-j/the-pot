@@ -75,3 +75,49 @@ def square_env() -> str:
     """"sandbox" or "production" as configured (no default: a token for one is rejected by the other);
     square_client.environment() validates it."""
     return os.environ.get("SQUARE_ENV", "").strip().lower()
+
+
+# Weekly reminder email (optional, #26): off unless SMTP_HOST and REMINDER_TO are set. Read at call time, like api_key().
+DAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+
+
+def smtp() -> dict:
+    """host, port (587 by default; 465 means TLS from the start), user, from_addr. The password is smtp_password()."""
+    user = os.environ.get("SMTP_USER", "").strip()
+    try:
+        port = int(os.environ.get("SMTP_PORT", "") or 587)
+    except ValueError:
+        port = 587
+    return {"host": os.environ.get("SMTP_HOST", "").strip(), "port": port, "user": user,
+            "from_addr": os.environ.get("SMTP_FROM", "").strip() or user}
+
+
+def smtp_password() -> str | None:
+    pw_file = os.environ.get("SMTP_PASSWORD_FILE")
+    if pw_file:
+        return Path(pw_file).read_text().strip() or None
+    return os.environ.get("SMTP_PASSWORD", "").strip() or None
+
+
+def reminder_to() -> list[str]:
+    return [a.strip() for a in os.environ.get("REMINDER_TO", "").split(",") if a.strip()]
+
+
+def reminders_on() -> bool:
+    return bool(smtp()["host"] and reminder_to())
+
+
+def reminder_when() -> tuple[int, int]:
+    """(weekday, hour) to send the reminder, local time (TZ): REMINDER_DAY (mon..sun, default mon) and REMINDER_HOUR
+    (0-23, default 9). Invalid values fall back to the defaults."""
+    day = os.environ.get("REMINDER_DAY", "").strip().lower()[:3]
+    try:
+        hour = int(os.environ.get("REMINDER_HOUR", "") or 9)
+    except ValueError:
+        hour = 9
+    return (DAYS.index(day) if day in DAYS else 0, hour if 0 <= hour <= 23 else 9)
+
+
+def site_url() -> str:
+    """Where the app is reached (POT_URL), for links in emails; blank leaves them out."""
+    return os.environ.get("POT_URL", "").strip().rstrip("/")

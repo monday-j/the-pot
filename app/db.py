@@ -187,6 +187,11 @@ CREATE TABLE IF NOT EXISTS entrant_override (
     created_at TEXT NOT NULL,
     PRIMARY KEY (tournament_id, player_id)
 );
+-- Small bits of state that must survive restarts, e.g. when the weekly reminder was last sent (mail.py).
+CREATE TABLE IF NOT EXISTS app_state (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 CREATE INDEX IF NOT EXISTS idx_square_tournament ON square_payment(tournament_id);
 CREATE INDEX IF NOT EXISTS idx_square_fingerprint ON square_payment(fingerprint);
 CREATE INDEX IF NOT EXISTS idx_payout_player ON payout(player_id);

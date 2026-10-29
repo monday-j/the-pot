@@ -65,6 +65,13 @@ you've paid them and what you still owe. For your LAN, behind one shared passwor
   "sorted out") and lock as soon as they're clear. A locked tournament's settings, payouts and payment links can't
   change and it isn't recomputed. Syncing from parry.gg and pulling from Square skip locked tournaments, so a long
   series only re-reads what's still open. Undo the latest reconciliation, one at a time, to unlock (and re-import).
+- **Weekly reminder** (optional): set `SMTP_HOST` (plus `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD` or
+  `SMTP_PASSWORD_FILE`, `SMTP_FROM`) and `REMINDER_TO` (comma-separated) to get an email once a week, at
+  `REMINDER_HOUR` (default 9) on `REMINDER_DAY` (default `mon`) in your `TZ`, reminding you to process payments: when
+  the bank was last reconciled and what's moved since, tournaments with Square payments missing or to link, events to
+  finalise, and what's owed. Set `POT_URL` to have it link to the pages. Port 587 needs STARTTLS (465 is TLS from the
+  start). `python -m app.mail preview` prints this week's email; `python -m app.mail test` sends it now. A reminder
+  missed by more than a day (the app was down) is skipped, not sent late.
 - **Pulling a whole series**: "Pull Square payments (all tournaments)" on the series page pulls every tournament in the
   background with a single Square query per location (spanning all their dates, then filing each payment under the
   night it belongs to), so a season costs a few requests rather than one per night. Set `SQUARE_AUTO_PULL_HOURS`

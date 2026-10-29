@@ -25,3 +25,11 @@ def no_square_settings(monkeypatch):
     square_auth.forget()
     yield
     square_auth.forget()
+
+
+@pytest.fixture(autouse=True)
+def no_mail_settings(monkeypatch):
+    """Tests never pick up the real environment's SMTP or reminder settings."""
+    for name in ("SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASSWORD", "SMTP_PASSWORD_FILE", "SMTP_FROM",
+                 "REMINDER_TO", "REMINDER_DAY", "REMINDER_HOUR", "POT_URL"):
+        monkeypatch.delenv(name, raising=False)

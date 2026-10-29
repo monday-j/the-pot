@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from . import auth, bank, codes, config, db, square, sync
+from . import auth, bank, codes, config, db, mail, square, sync
 from .parry_client import GrpcParryClient
 from . import square_auth
 from .square_client import HttpSquareClient, SquareConfigError, environment as square_environment
@@ -30,6 +30,8 @@ async def lifespan(app):
     if hours:  # one worker only (see the Dockerfile), so a single timer thread
         threading.Thread(target=square.auto_pull_loop, args=(stop, lambda: HttpSquareClient(), hours),
                          daemon=True).start()
+    if config.reminders_on():
+        threading.Thread(target=mail.reminder_loop, args=(stop,), daemon=True).start()
     yield
     stop.set()
 

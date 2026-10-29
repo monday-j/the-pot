@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<!-- Static and self-contained: loads nothing, sends nothing. The code is single-use, expires in 5 minutes and is
+     useless without the app's client secret, which never leaves the server. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-ExYnqvO7atScKaiv3HJZyMFa6PNDcY3bHSP1NCSDmVA='; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="no-referrer">
+<meta name="robots" content="noindex">
+<title>The Pot: Square authorisation</title>
+<style>
+:root{--bg:#fff;--fg:#1a1d24;--mut:#667085;--line:#d5d9e0;--warn:#a16207;--bad:#b42318}
+@media (prefers-color-scheme:dark){:root{--bg:#14161b;--fg:#e6e8ee;--mut:#98a0b0;--line:#2e323d;--warn:#fbbf24;--bad:#f87171}}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}
+main{max-width:44rem;margin:2rem auto;padding:0 16px}
+h1{font-size:1.3rem}code,textarea{font:13px ui-monospace,SFMono-Regular,Menlo,monospace}
+textarea{width:100%;box-sizing:border-box;padding:.5rem;border:1px solid var(--line);background:var(--bg);color:var(--fg);resize:none}
+.mut{color:var(--mut)}.bad{color:var(--bad)}.warn{color:var(--warn)}
+</style></head><body><main>
+<h1>The Pot: Square authorisation</h1>
+<div id="ok" hidden>
+<p>Square approved read-only access. Within <b>5 minutes</b>, run this on the server:</p>
+<textarea id="cmd" rows="3" readonly></textarea>
+<p class="mut">The code works once, expires in 5 minutes, and is useless without the app's client secret. This page
+loads nothing and sends nothing; it has already removed the code from your address bar and history.</p>
+</div>
+<div id="err" hidden><p class="bad">Square didn't grant access: <code id="why"></code></p>
+<p class="mut">Start again with <code>python -m app.square_oauth url</code>.</p></div>
+<div id="none" hidden><p class="warn">No authorisation code here. Start with <code>python -m app.square_oauth url</code> on the server.</p></div>
+</main><script>
+(function () {
+  var q = new URLSearchParams(location.search), code = q.get("code"), state = q.get("state") || "";
+  history.replaceState(null, "", location.pathname);
+  var clean = function (s) { return s.replace(/[^A-Za-z0-9_\-]/g, ""); };
+  if (code) {
+    document.getElementById("cmd").value = "python -m app.square_oauth exchange " + clean(code) + " " + clean(state);
+    document.getElementById("ok").hidden = false;
+  } else if (q.get("error")) {
+    document.getElementById("why").textContent = q.get("error") + (q.get("error_description") ? ": " + q.get("error_description") : "");
+    document.getElementById("err").hidden = false;
+  } else {
+    document.getElementById("none").hidden = false;
+  }
+})();
+</script></body></html>

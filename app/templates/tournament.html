@@ -36,7 +36,7 @@
 <h2 id="square">Square payments <span class="n">· {{ recon.count }}</span></h2>
 <div class="summary"><span><b>{{ recon.expected|money }}</b> expected from {{ recon.attendees }} attendees</span>
 <span><b>{{ recon.taken|money }}</b> taken in {{ recon.count }} payments</span>
-{% if recon.payments %}<span><b>{{ recon.fees|money }}</b> card fees{% if recon.fees_pending %} <span class="warn" title="Square adds its fee a little after each payment; pull again later">({{ recon.fees_pending }} pending)</span>{% endif %}</span>
+{% if recon.payments %}<span><b>{{ recon.fees|money }}</b> card fees{% if recon.refunded_fees %} <span class="mut">(incl. {{ recon.refunded_fees|money }} on {{ recon.refunded }} refunded payment{{ "s" if recon.refunded != 1 }})</span>{% endif %}{% if recon.fees_pending %} <span class="warn" title="Square adds its fee a little after each payment; pull again later">({{ recon.fees_pending }} pending)</span>{% endif %}</span>
 <span><b>{{ recon.net|money }}</b> net</span>
 <span><b class="{{ 'ok' if recon.banked == recon.net else 'warn' }}">{{ recon.banked|money }}</b> of it <a href="/bank">in the bank</a></span>{% endif %}
 {% if recon.payments %}<span><b class="{{ 'ok' if recon.difference == 0 else 'bad' }}">{{ recon.difference|money }}</b> difference</span>
@@ -46,12 +46,12 @@
 {% if not sq.token %}<span class="mut">Give the app read-only Square access (see the README) to pull payments.</span>{% elif sq.error %}<span class="bad">{{ sq.error }}</span>{% else %}<span class="tag" title="SQUARE_ENV">Square: {{ sq.env }}</span> <span class="mut">Payments on {{ t.start_date }} (until 6am the next day){% if venue and venue.info.venue_id %} at the venue's Square location{% endif %}.</span>{% endif %}</form>
 {% if recon.payments %}
 <div class="tw"><table class="sortable"><thead><tr><th>Time</th><th class="r">Amount</th><th class="r">Fee</th><th>Card</th><th>Name / note</th><th>Player</th><th></th></tr></thead><tbody>
-{% for p in recon.payments %}<tr{% if p.ignored %} class="mut"{% endif %}><td>{{ p.created_at|localtime }}</td>{{ m.mtd(p.amount_cents) }}<td class="r" data-v="{{ p.fee_cents or 0 }}">{% if p.fee_cents is none %}<span class="mut" title="Square hasn't added its fee yet">pending</span>{% else %}{{ p.fee_cents|money }}{% endif %}</td>
+{% for p in recon.payments %}{% set refunded = p.amount_cents <= 0 %}<tr{% if p.ignored or refunded %} class="mut"{% endif %}><td>{{ p.created_at|localtime }}</td>{% if refunded %}<td class="r" data-v="0"><span class="tag" title="Fully refunded: not counted as a payment">refunded</span></td>{% else %}{{ m.mtd(p.amount_cents) }}{% endif %}<td class="r" data-v="{{ p.fee_cents or 0 }}">{% if p.fee_cents is none %}<span class="mut" title="Square hasn't added its fee yet">pending</span>{% else %}{{ p.fee_cents|money }}{% endif %}</td>
 <td>{% if p.last_4 %}{{ p.card_brand|replace("_", " ")|title }} ··{{ p.last_4 }}{% else %}{{ p.source_type|lower }}{% endif %}</td>
 <td>{{ p.cardholder_name }}{% if p.cardholder_name and p.note %} · {% endif %}<span class="mut">{{ p.note }}</span></td>
-<td><form class="inline" method="post" action="/square-payments/{{ p.id|urlq }}/link"><select name="player_id" onchange="this.form.submit()">
+<td>{% if refunded %}<span class="mut">refunded, nothing to link</span>{% else %}<form class="inline" method="post" action="/square-payments/{{ p.id|urlq }}/link"><select name="player_id" onchange="this.form.submit()">
 <option value="">(not linked)</option>{% for a in attendees %}<option value="{{ a.id }}" {{ "selected" if a.id == p.pid }}>{{ a.tag }}</option>{% endfor %}</select><noscript><button class="sec">Link</button></noscript></form>
-{% if p.link == "auto" %}<span class="tag" title="Linked automatically: this card paid for them before">auto</span>{% endif %}</td>
+{% if p.link == "auto" %}<span class="tag" title="Linked automatically: this card paid for them before">auto</span>{% endif %}{% endif %}</td>
 <td><form class="inline" method="post" action="/square-payments/{{ p.id|urlq }}/ignore"><button class="sec">{{ "Count" if p.ignored else "Ignore" }}</button></form></td></tr>{% endfor %}</tbody></table></div>
 <h3 class="help">Who paid</h3>
 <table class="sortable"><thead><tr><th>Player</th><th class="r">Expected</th><th class="r">Paid</th><th class="r">Difference</th><th>Status</th></tr></thead><tbody>

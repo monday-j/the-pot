@@ -30,8 +30,8 @@ def _auto_player(conn, tournament_id: str, fingerprint: str):
     """
     if not fingerprint:
         return None
-    if conn.execute("SELECT 1 FROM square_payment WHERE tournament_id=? AND fingerprint=?",
-                    (tournament_id, fingerprint)).fetchone():
+    if conn.execute("SELECT 1 FROM square_payment WHERE tournament_id=? AND fingerprint=? AND amount_cents > 0",
+                    (tournament_id, fingerprint)).fetchone():  # a refunded charge before it doesn't count
         return None
     owners = [r["pid"] for r in conn.execute(
         """SELECT DISTINCT COALESCE(p.merged_into, p.id) AS pid FROM square_payment sp JOIN player p ON p.id=sp.player_id
@@ -71,7 +71,7 @@ def _store(conn, tournament_id: str | None, p, counts: dict):
         return
     if tournament_id is None:
         return
-    player = _auto_player(conn, tournament_id, p.fingerprint)
+    player = _auto_player(conn, tournament_id, p.fingerprint) if p.amount_cents > 0 else None  # not a refunded one
     paid_out_by = conn.execute(  # an imported Square payout that already listed this payment
         "SELECT deposit_id FROM square_payout_entry WHERE payment_id=? AND type='CHARGE' LIMIT 1", (p.id,)).fetchone()
     conn.execute("""INSERT INTO square_payment (id, tournament_id, player_id, link, amount_cents, fee_cents, created_at,
@@ -241,13 +241,15 @@ def expected_by_player(conn, tournament_id: str) -> dict:
 
 
 def reconcile(conn, tournament_id: str) -> dict:
-    """Expected vs taken, per player and in total. Ignored payments don't count."""
+    """Expected vs taken, per player and in total. Ignored payments don't count, and neither do fully refunded
+    ones (stored at $0), apart from their card fees: Square's payment data doesn't say whether it gave those back."""
     expected = expected_by_player(conn, tournament_id)
     payments = conn.execute("""SELECT sp.*, COALESCE(a.merged_into, sp.player_id) AS pid, p.gamer_tag
                                FROM square_payment sp LEFT JOIN player a ON a.id=sp.player_id
                                LEFT JOIN player p ON p.id=COALESCE(a.merged_into, sp.player_id)
                                WHERE sp.tournament_id=? ORDER BY sp.created_at""", (tournament_id,)).fetchall()
-    counted = [p for p in payments if not p["ignored"]]
+    counted = [p for p in payments if not p["ignored"] and p["amount_cents"] > 0]
+    refunded = [p for p in payments if not p["ignored"] and p["amount_cents"] <= 0]
     paid = {}
     for p in counted:
         if p["pid"]:
@@ -263,12 +265,13 @@ def reconcile(conn, tournament_id: str) -> dict:
                         "state": state})
     players.sort(key=lambda r: (r["state"] == "ok", r["tag"].lower()))
     expected_total, taken = sum(expected.values()), sum(p["amount_cents"] for p in counted)
-    fees = sum(p["fee_cents"] or 0 for p in counted)
-    banked = sum(p["amount_cents"] - (p["fee_cents"] or 0) for p in counted if p["deposit_id"])
+    fees = sum(p["fee_cents"] or 0 for p in counted + refunded)
+    banked = sum(p["amount_cents"] - (p["fee_cents"] or 0) for p in counted + refunded if p["deposit_id"])
     return {"payments": payments, "players": players, "expected": expected_total, "taken": taken,
             "fees": fees, "net": taken - fees, "banked": banked, "fees_pending": sum(1 for p in counted if p["fee_cents"] is None),
             "difference": taken - expected_total, "attendees": len(expected), "count": len(counted),
-            "unlinked": sum(1 for p in counted if not p["player_id"]),
+            "unlinked": sum(1 for p in counted if not p["player_id"]), "refunded": len(refunded),
+            "refunded_fees": sum(p["fee_cents"] or 0 for p in refunded),
             "problems": sum(1 for r in players if r["state"] != "ok")}
 
 
@@ -290,7 +293,7 @@ def payment_issues(conn, series_id: int | None = None) -> list[dict]:
                         "players": len(missing), "missing": -sum(p["diff"] for p in missing),
                         "unlinked": r["unlinked"],
                         "unlinked_cents": sum(p["amount_cents"] for p in r["payments"]
-                                              if not p["ignored"] and not p["player_id"])})
+                                              if not p["ignored"] and not p["player_id"] and p["amount_cents"] > 0)})
     return out
 
 

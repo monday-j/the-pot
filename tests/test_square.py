@@ -529,3 +529,40 @@ def test_missing_payments_show_in_needs_attention(client, monkeypatch):  # noqa:
         assert "1 tournament with missing payments" in page and "💳 3 players unpaid or short, $15.00 missing" in page
         assert 'href="/tournaments/t1#square"' in page and "1 payment ($5.00) not linked to a player" in page
     assert "1</b> tournament with missing payments" in client.get("/").text
+
+
+def test_fully_refunded_payments_are_shown_but_not_counted(fnb):
+    from dataclasses import replace
+    # as at LSC #90: the same card charged $15 twice by mistake (both refunded in full), then the right $10
+    wrong = [replace(pay(f"R{i}", 0, "fp-x", f"2026-01-01T20:1{i}:00Z"), fee_cents=24) for i in (0, 1)]
+    right = replace(pay("OK", 1000, "fp-x", "2026-01-01T20:16:00Z"), fee_cents=16)
+    square.pull_tournament(fnb, FakeSquare([*wrong, right]), "t1")
+    r = square.reconcile(fnb, "t1")
+    assert (r["count"], r["refunded"], r["unlinked"], r["taken"]) == (1, 2, 1, 1000)
+    assert (r["fees"], r["refunded_fees"], r["net"]) == (64, 48, 936)  # refunded payments' fees still shown
+    square.link_payment(fnb, "OK", "u1")
+    # a later night: the refunded payments taught nothing, so only the hand-linked card auto-links
+    night2 = FakeSquare([replace(pay("Z", 0, "fp-x", "2026-01-08T19:00:00Z"), fee_cents=24),
+                         pay("Y", 1000, "fp-x", "2026-01-08T19:05:00Z")])
+    fnb.execute("INSERT INTO tournament_entry VALUES ('t3', 'u1')")
+    square.pull_tournament(fnb, night2, "t3")
+    links = {row[0]: row[1] for row in fnb.execute("SELECT id, link FROM square_payment WHERE tournament_id='t3'")}
+    assert links == {"Z": "none", "Y": "auto"}  # the refunded one is never auto-linked, so it can't block Y
+
+
+def test_refunded_payments_on_the_page(client, monkeypatch):  # noqa: F811
+    from dataclasses import replace
+    monkeypatch.setattr(main, "GrpcParryClient", TwoNightsClient)
+    client.post("/series", data={"name": "FNB", "custom_slug": "fnb"})
+    client.post("/series/1/sync")
+    for _ in range(50):
+        if sync.status[1]["state"] != "running":
+            break
+        time.sleep(0.05)
+    oauth_env(monkeypatch, "sandbox")
+    fake = FakeSquare([replace(pay("R1", 0, "fp-x"), fee_cents=24), replace(pay("OK", 1000, "fp-y"), fee_cents=16)])
+    monkeypatch.setattr(main, "HttpSquareClient", lambda: fake)
+    page = client.post("/tournaments/t1/square/pull").text
+    assert "Square payments <span class=\"n\">· 1</span>" in page and "taken in 1 payments" in page
+    assert "refunded, nothing to link" in page and "(incl. $0.24 on 1 refunded payment)" in page
+    assert page.count('action="/square-payments/R1/link"') == 0 and 'action="/square-payments/OK/link"' in page

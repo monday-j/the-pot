@@ -19,8 +19,9 @@ class FakeSquare:
         self.calls = []
 
     def list_payments(self, begin_time, end_time, location_id=""):
+        """Like Square: only payments created in the range (created_at is compared at second precision)."""
         self.calls.append((begin_time, end_time, location_id))
-        return self.payments
+        return [p for p in self.payments if begin_time <= p.created_at[:19] + "Z" <= end_time]
 
     def close(self):
         pass
@@ -80,9 +81,16 @@ def test_a_card_seen_before_links_itself_and_other_tournaments_keep_their_paymen
     square.link_payment(fnb, "P1", "u2")  # Bob paid at t1 with this card
     night2 = FakeSquare([pay("P1", 1000, "fp-bob"), pay("P9", 1000, "fp-bob", "2026-01-08T09:00:00Z"),
                          pay("P10", 1000, "fp-alice", "2026-01-08T09:05:00Z")])
-    assert square.pull_tournament(fnb, night2, "t3") == {"new": 2, "updated": 0, "elsewhere": 1, "linked": 1}
+    assert square.pull_tournament(fnb, night2, "t3") == {"new": 2, "updated": 0, "elsewhere": 0, "linked": 1}
     rows = {r["id"]: (r["player_id"], r["link"]) for r in fnb.execute("SELECT * FROM square_payment")}
     assert rows == {"P1": ("u2", "manual"), "P9": ("u2", "auto"), "P10": (None, "none")}
+
+
+def test_a_payment_counted_for_one_tournament_stays_there(fnb):
+    fnb.execute("UPDATE tournament SET start_date='2026-01-01' WHERE id='t3'")  # two events the same day
+    square.pull_tournament(fnb, FakeSquare([pay("P1", 1000)]), "t1")
+    assert square.pull_tournament(fnb, FakeSquare([pay("P1", 1000)]), "t3")["elsewhere"] == 1
+    assert fnb.execute("SELECT tournament_id FROM square_payment").fetchone()[0] == "t1"
 
 
 def test_a_second_tap_from_the_same_card_stays_unlinked(fnb):
@@ -271,3 +279,123 @@ def test_pages_are_paced(monkeypatch):
     c, clock, calls = square_with(monkeypatch, [page("A", "2"), page("B", "3"), page("C")])
     assert [p.id for p in c.list_payments("a", "b")] == ["A", "B", "C"]
     assert [b - a for a, b in zip(calls, calls[1:])] == [0.25, 0.25]
+
+
+def test_series_pull_makes_one_query_and_files_payments_by_night(fnb, monkeypatch):
+    monkeypatch.setattr(config, "TIMEZONE", "UTC")
+    fnb.execute("INSERT INTO tournament (id, series_id, name, start_date) VALUES ('t4', 1, 'Next day', '2026-01-09')")
+    client = FakeSquare([pay("A", 1000, when="2026-01-01T20:00:00Z"),   # night 1
+                         pay("B", 1000, when="2026-01-04T12:00:00Z"),   # mid-week: no tournament
+                         pay("C", 1000, when="2026-01-08T19:00:00Z"),   # night 2
+                         pay("D", 1000, when="2026-01-09T01:00:00Z"),   # small hours after night 2, also t4's day
+                         pay("E", 1000, when="2026-01-09T18:00:00Z")])  # t4
+    r = square.pull_series(fnb, client, 1)
+    assert (r["tournaments"], r["new"]) == (3, 4) and len(client.calls) == 1  # one query for the whole series
+    assert client.calls[0][:2] == ("2026-01-01T00:00:00Z", "2026-01-10T06:00:00Z")
+    filed = {row[0]: row[1] for row in fnb.execute("SELECT id, tournament_id FROM square_payment")}
+    assert filed == {"A": "t1", "C": "t3", "D": "t3", "E": "t4"}
+    assert square.pull_series(fnb, client, 1)["updated"] == 4  # idempotent
+
+    client.calls.clear()
+    assert square.pull_series(fnb, client, 1, since="2026-01-08")["tournaments"] == 2
+    assert client.calls[0][0] == "2026-01-08T00:00:00Z"
+
+
+def test_series_pull_queries_each_square_location_once(fnb, monkeypatch):
+    monkeypatch.setattr(config, "TIMEZONE", "UTC")
+    fnb.execute("INSERT INTO venue (id, name, square_location_id) VALUES (1, 'Hall', 'LOC-HALL'), (2, 'Bar', 'LOC-BAR')")
+    fnb.execute("UPDATE series_period SET venue_id=1")
+    fnb.execute("UPDATE tournament SET venue_id=2 WHERE id='t3'")  # night 2 held at the bar
+    sync.recompute_series(fnb, 1)
+    client = FakeSquare()
+    square.pull_series(fnb, client, 1)
+    assert sorted(c[2] for c in client.calls) == ["LOC-BAR", "LOC-HALL"]
+
+
+def test_only_one_square_pull_runs_at_a_time(fnb, monkeypatch):
+    import threading
+    gate, started = threading.Event(), threading.Event()
+
+    class Slow(FakeSquare):
+        def list_payments(self, *a):
+            started.set()
+            gate.wait(5)
+            return []
+
+    fnb.commit()  # the worker thread opens its own connection to the test database
+    assert square.start_series_pull(1, Slow)
+    started.wait(5)
+    assert not square.start_series_pull(1, FakeSquare)  # refused while the first is running
+    assert square.status[1]["state"] == "running"
+    gate.set()
+    for _ in range(100):
+        if square.status[1]["state"] != "running":
+            break
+        time.sleep(0.02)
+    assert square.status[1]["state"] == "done" and "across 2 tournaments" in square.status[1]["message"]
+    assert square.start_series_pull(1, FakeSquare)  # free again
+
+
+class _session:
+    """db.session() stand-in that reuses the test connection."""
+    def __init__(self, conn):
+        self.conn = conn
+
+    def __enter__(self):
+        return self.conn
+
+    def __exit__(self, *exc):
+        return False
+
+
+def test_automatic_pull_covers_recent_tournaments_of_tracked_series(fnb, monkeypatch):
+    monkeypatch.setattr(square.db, "session", lambda: _session(fnb))
+    monkeypatch.setenv("SQUARE_API_KEY", "tok")
+    monkeypatch.delenv("SQUARE_ENV", raising=False)
+    client = FakeSquare()
+    square.auto_pull_once(lambda: client)
+    assert client.calls == []  # Square isn't set up properly: skipped
+    monkeypatch.setenv("SQUARE_ENV", "sandbox")
+
+    today = square.datetime.now(square.ZoneInfo(config.TIMEZONE)).date()
+    fnb.execute("UPDATE tournament SET start_date=? WHERE id='t3'", ((today - square.timedelta(days=3)).isoformat(),))
+    square.auto_pull_once(lambda: client)
+    assert len(client.calls) == 1 and client.calls[0][0].startswith((today - square.timedelta(days=3)).isoformat()[:8])
+    assert square.status[1]["auto"] and square.status[1]["message"].endswith("across 1 tournaments")  # t1 is too old
+
+    client.calls.clear()
+    fnb.execute("UPDATE series SET tracked=0")
+    square.auto_pull_once(lambda: client)
+    assert client.calls == []
+
+
+def test_auto_pull_hours_setting(monkeypatch):
+    for value, hours in (("", 0.0), ("6", 6.0), ("0.5", 0.5), ("-2", 0.0), ("often", 0.0)):
+        monkeypatch.setenv("SQUARE_AUTO_PULL_HOURS", value)
+        assert config.square_auto_pull_hours() == hours
+
+
+def test_series_square_pull_button(client, monkeypatch):  # noqa: F811
+    monkeypatch.setattr(main, "GrpcParryClient", TwoNightsClient)
+    client.post("/series", data={"name": "FNB", "custom_slug": "fnb"})
+    client.post("/series/1/sync")
+    for _ in range(50):
+        if sync.status[1]["state"] != "running":
+            break
+        time.sleep(0.05)
+    monkeypatch.delenv("SQUARE_API_KEY", raising=False)
+    assert "No Square API key" in client.post("/series/1/square/pull").text
+    monkeypatch.setenv("SQUARE_API_KEY", "tok")
+    monkeypatch.setenv("SQUARE_ENV", "sandbox")
+    monkeypatch.setenv("SQUARE_AUTO_PULL_HOURS", "6")
+    fake = FakeSquare([pay("P1", 500, when="2026-01-01T09:00:00Z")])
+    monkeypatch.setattr(main, "HttpSquareClient", lambda: fake)
+    assert "auto-pulls the last 14 days every 6h" in client.get("/series/FNB").text
+    client.post("/series/1/square/pull")
+    for _ in range(100):
+        if square.status.get(1, {}).get("state") not in (None, "running"):
+            break
+        time.sleep(0.02)
+    page = client.get("/series/FNB").text
+    assert "Square, " in page and "across 2 tournaments" in page
+    assert "Square payments" in client.get("/tournaments/t1").text

@@ -23,6 +23,14 @@ def square_token() -> str | None:
     return os.environ.get("SQUARE_API_KEY", "").strip() or None
 
 
+def square_auto_pull_hours() -> float:
+    """How often to pull recent Square payments automatically; 0 (blank, unset or invalid) turns it off."""
+    try:
+        return max(float(os.environ.get("SQUARE_AUTO_PULL_HOURS", "") or 0), 0.0)
+    except ValueError:
+        return 0.0
+
+
 def square_env() -> str:
     """"sandbox" or "production" as configured (no default: a token for one is rejected by the other);
     square_client.environment() validates it."""

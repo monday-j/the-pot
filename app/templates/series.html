@@ -1,13 +1,16 @@
 {% extends "base.html" %}{% import "_macros.html" as m %}
-{% block head %}{% if sync_status and sync_status.state == "running" %}<meta http-equiv="refresh" content="3">{% endif %}{% endblock %}
+{% block head %}{% if (sync_status and sync_status.state == "running") or (square_status and square_status.state == "running") %}<meta http-equiv="refresh" content="3">{% endif %}{% endblock %}
 {% block crumbs %}<div class="crumbs"><a href="/series">Series</a><span>{{ s.code or s.name }}</span></div>{% endblock %}
 {% block body %}
 <h1>{{ s.name }} <span class="tag">{{ s.code }}</span> <span class="tag">{{ "tracked" if s.tracked else "not tracked" }}</span></h1>
 {% if sync_status %}<div class="strip {{ 'err' if sync_status.state == 'error' }}">{{ sync_status.message }}</div>{% endif %}
+{% if square_status %}<div class="strip {{ 'err' if square_status.state == 'error' }}">Square{{ " (automatic)" if square_status.auto }}, {{ square_status.at|localtime }}: {{ square_status.message }}</div>{% endif %}
 <div class="summary"><span><b>{{ s.n }}</b> tournaments</span><span><b>{{ s.events }}</b> events</span><span><b class="warn">{{ s.owed|money }}</b> owed</span><span><b class="ok">{{ s.paid|money }}</b> paid</span>
 {% if current and current.venue_id %}<span>venue: {{ m.venue(current.venue_id, current.venue) }}</span>{% endif %}<span><b class="warn">{{ s.venue_owed|money }}</b> owed to venue</span><span><b class="ok">{{ s.venue_paid|money }}</b> paid to venue</span>
 <span>last synced {{ (s.last_synced or "never")[:16] }}</span></div>
 <div class="toolbar"><form class="inline" method="post" action="/series/{{ s.id }}/sync"><button>Import / sync now</button></form>
+<form class="inline" method="post" action="/series/{{ s.id }}/square/pull"><button class="sec" {{ "disabled" if not square_setup.env }} title="{{ square_setup.error or ('Square: ' ~ square_setup.env if square_setup.env else 'Set SQUARE_API_KEY and SQUARE_ENV') }}">Pull Square payments (all tournaments)</button></form>
+{% if square_setup.env and auto_pull_hours %}<span class="mut">auto-pulls the last 14 days every {{ auto_pull_hours|round(1)|string|replace(".0", "") }}h{{ " while tracked" if not s.tracked }}</span>{% endif %}
 <form class="inline" method="post" action="/series/{{ s.id }}/track"><button class="sec">{{ "Stop tracking" if s.tracked else "Track this series" }}</button></form></div>
 {% include "_issues.html" %}
 

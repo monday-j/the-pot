@@ -1,3 +1,4 @@
+import threading
 from contextlib import asynccontextmanager
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
@@ -22,7 +23,13 @@ BASE = Path(__file__).parent
 @asynccontextmanager
 async def lifespan(app):
     db.init()
+    stop = threading.Event()
+    hours = config.square_auto_pull_hours()
+    if hours:  # one worker only (see the Dockerfile), so a single timer thread
+        threading.Thread(target=square.auto_pull_loop, args=(stop, lambda: HttpSquareClient(), hours),
+                         daemon=True).start()
     yield
+    stop.set()
 
 
 app = FastAPI(title="The Pot", lifespan=lifespan)
@@ -283,7 +290,9 @@ def series_page(request: Request, ref: str, period: int | None = None):
         venues = venue_options(conn)
     return render(request, "series.html", s=s, tournaments=tournaments, games=games, game_rules=game_rules,
                   rules=rules, events=events, sync_status=sync.status.get(series_id), issues=issues,
-                  venues=venues, periods=periods, current=current, shown=shown)
+                  venues=venues, periods=periods, current=current, shown=shown,
+                  square_status=square.status.get(series_id), square_setup=square_setup(),
+                  auto_pull_hours=config.square_auto_pull_hours())
 
 
 @app.post("/series/{series_id}/settings")
@@ -465,6 +474,19 @@ def square_pull(tournament_id: str):
     except Exception as e:  # shown in the UI; never includes the token
         return back(f"/tournaments/{tournament_id}", f"{type(e).__name__}: {e}")
     return back(to)
+
+
+@app.post("/series/{series_id}/square/pull")
+def series_square_pull(series_id: int):
+    """Pull every tournament of the series in the background (one Square query per location, see square.py)."""
+    with db.session() as conn:
+        one(conn, "SELECT id FROM series WHERE id=?", series_id)
+    setup = square_setup()
+    if not setup["env"]:
+        return back(f"/series/{series_id}", setup["error"] or "No Square API key configured (SQUARE_API_KEY)")
+    if not square.start_series_pull(series_id, lambda: HttpSquareClient()):
+        return back(f"/series/{series_id}", "A Square pull is already running; try again when it finishes")
+    return back(f"/series/{series_id}")
 
 
 @app.post("/square-payments/{payment_id}/link")

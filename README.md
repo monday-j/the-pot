@@ -47,6 +47,11 @@ you've paid them and what you still owe. Local-only (no auth), SQLite, run as a 
   player is never auto-linked, and a second payment from the same card in one night stays unlinked (someone paying for
   a friend). Auto-links are tagged "auto". Payments that aren't fees can be ignored, and a payment is only ever counted
   for one tournament.
+- **Pulling a whole series**: "Pull Square payments (all tournaments)" on the series page pulls every tournament in the
+  background with a single Square query per location (spanning all their dates, then filing each payment under the
+  night it belongs to), so a season costs a few requests rather than one per night. Set `SQUARE_AUTO_PULL_HOURS`
+  (e.g. `6`) to do this automatically for the last 14 days of every tracked series; leave it blank to turn it off.
+  Only one Square pull runs at a time, and the series page shows the last result.
 - Payouts are only calculated for events whose placements are **finalised** (complete on parry.gg, with a single 1st
   place). Others are flagged on the dashboard, series, tournament and event pages until fixed on parry.gg and re-synced.
 - **UI**: server-rendered, table-first, with every player, event, tournament, series and game linking to its page, plus

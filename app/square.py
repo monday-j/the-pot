@@ -1,10 +1,12 @@
 """Pull a tournament's Square payments and reconcile them against what attendees should have paid."""
+import logging
+import threading
 from datetime import date, datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from . import config, sync
+from . import config, db, sync
 from .payouts import RuleError
-from .square_client import SquareClient
+from .square_client import SquareClient, SquareConfigError, SquareRateLimited, environment
 
 # Payments from the tournament's day until this hour the next morning count towards it.
 NEXT_DAY_CUTOFF = time(6)
@@ -40,41 +42,157 @@ def _auto_player(conn, tournament_id: str, fingerprint: str):
     return None
 
 
+def _location(conn, tournament_id: str) -> str:
+    """The Square location of the tournament's venue, or "" for the seller's main location."""
+    info = sync.venue_inputs(conn, tournament_id)
+    if info and info["venue_id"]:
+        return conn.execute("SELECT square_location_id FROM venue WHERE id=?", (info["venue_id"],)).fetchone()[0]
+    return ""
+
+
+def _utc(stamp: str):
+    return datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+
+
+def _store(conn, tournament_id: str, p, counts: dict):
+    """Insert or refresh one completed payment for a tournament. Keeps links and ignores; a payment already
+    stored against another tournament is left there."""
+    row = conn.execute("SELECT * FROM square_payment WHERE id=?", (p.id,)).fetchone()
+    if row and row["tournament_id"] != tournament_id:
+        counts["elsewhere"] += 1
+        return
+    fields = (p.amount_cents, p.created_at, p.source_type, p.card_brand, p.last_4, p.fingerprint,
+              p.cardholder_name, p.note, p.receipt_url)
+    if row:
+        conn.execute("""UPDATE square_payment SET amount_cents=?, created_at=?, source_type=?, card_brand=?, last_4=?,
+                        fingerprint=?, cardholder_name=?, note=?, receipt_url=? WHERE id=?""", (*fields, p.id))
+        counts["updated"] += 1
+        return
+    player = _auto_player(conn, tournament_id, p.fingerprint)
+    conn.execute("""INSERT INTO square_payment (id, tournament_id, player_id, link, amount_cents, created_at, source_type,
+                    card_brand, last_4, fingerprint, cardholder_name, note, receipt_url)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                 (p.id, tournament_id, player, "auto" if player else "none", *fields))
+    counts["new"] += 1
+    counts["linked"] += player is not None
+
+
+def pull_tournaments(conn, client: SquareClient, tournament_ids) -> dict:
+    """Store the completed Square payments (net of refunds) of several tournaments. Idempotent.
+
+    To keep the number of Square calls low, this makes one (paged) query per Square location spanning all the
+    tournaments' windows, then files each payment under the tournament whose window it falls in; payments between
+    tournaments are skipped. A payment in two windows (the small hours after a night, before the next day's event)
+    goes to the earlier tournament. Tournaments without a date are skipped.
+    """
+    by_location = {}
+    for tid in tournament_ids:
+        t = conn.execute("SELECT id, start_date FROM tournament WHERE id=?", (tid,)).fetchone()
+        if t and t["start_date"]:
+            begin, end = window(t["start_date"])
+            by_location.setdefault(_location(conn, tid), []).append((_utc(begin), _utc(end), tid))
+    counts = {"new": 0, "updated": 0, "elsewhere": 0, "linked": 0}
+    for location, windows in by_location.items():
+        windows.sort()
+        begin, end = windows[0][0], max(w[1] for w in windows)
+        fmt = lambda d: d.strftime("%Y-%m-%dT%H:%M:%SZ")
+        for p in client.list_payments(fmt(begin), fmt(end), location):
+            if p.status != "COMPLETED" or not p.created_at:
+                continue
+            when = _utc(p.created_at)
+            tid = next((w[2] for w in windows if w[0] <= when <= w[1]), None)
+            if tid is not None:
+                _store(conn, tid, p, counts)
+    return counts
+
+
 def pull_tournament(conn, client: SquareClient, tournament_id: str) -> dict:
-    """Store the tournament's completed Square payments (net of refunds). Idempotent; keeps links and ignores.
-    A payment already stored against another tournament (e.g. one the same day) is left there."""
+    """Store one tournament's completed Square payments; see pull_tournaments."""
     t = conn.execute("SELECT * FROM tournament WHERE id=?", (tournament_id,)).fetchone()
     if not t["start_date"]:
         raise RuleError("This tournament has no date, so its Square payments can't be found")
-    info = sync.venue_inputs(conn, tournament_id)
-    location = ""
-    if info and info["venue_id"]:
-        location = conn.execute("SELECT square_location_id FROM venue WHERE id=?",
-                                (info["venue_id"],)).fetchone()[0]
-    begin, end = window(t["start_date"])
-    counts = {"new": 0, "updated": 0, "elsewhere": 0, "linked": 0}
-    for p in client.list_payments(begin, end, location):
-        if p.status != "COMPLETED":
-            continue
-        row = conn.execute("SELECT * FROM square_payment WHERE id=?", (p.id,)).fetchone()
-        if row and row["tournament_id"] != tournament_id:
-            counts["elsewhere"] += 1
-            continue
-        fields = (p.amount_cents, p.created_at, p.source_type, p.card_brand, p.last_4, p.fingerprint,
-                  p.cardholder_name, p.note, p.receipt_url)
-        if row:
-            conn.execute("""UPDATE square_payment SET amount_cents=?, created_at=?, source_type=?, card_brand=?, last_4=?,
-                            fingerprint=?, cardholder_name=?, note=?, receipt_url=? WHERE id=?""", (*fields, p.id))
-            counts["updated"] += 1
-            continue
-        player = _auto_player(conn, tournament_id, p.fingerprint)
-        conn.execute("""INSERT INTO square_payment (id, tournament_id, player_id, link, amount_cents, created_at, source_type,
-                        card_brand, last_4, fingerprint, cardholder_name, note, receipt_url)
-                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                     (p.id, tournament_id, player, "auto" if player else "none", *fields))
-        counts["new"] += 1
-        counts["linked"] += player is not None
-    return counts
+    return pull_tournaments(conn, client, [tournament_id])
+
+
+def pull_series(conn, client: SquareClient, series_id: int, since: str | None = None) -> dict:
+    """Pull every dated, non-excluded tournament of a series (only those on or after `since`, if given)."""
+    ids = [r[0] for r in conn.execute(
+        """SELECT id FROM tournament WHERE series_id=? AND excluded=0 AND COALESCE(start_date, '') != ''
+           AND (? IS NULL OR start_date >= ?) ORDER BY start_date""", (series_id, since, since))]
+    return {**pull_tournaments(conn, client, ids), "tournaments": len(ids)}
+
+
+# --- background and automatic pulls ----------------------------------------
+
+AUTO_PULL_DAYS = 14  # automatic pulls cover tracked series' tournaments from this many days back
+AUTO_PULL_FIRST_DELAY = 60  # seconds after startup before the first automatic pull
+
+_running = threading.Lock()  # one Square pull at a time, manual or automatic
+status: dict = {}  # series_id -> {"state": "running"|"done"|"error", "message": str, "at": str, "auto": bool}
+log = logging.getLogger("the_pot.square")
+
+
+def _work(series_id: int, client_factory, since: str | None, auto: bool):
+    """Run one series pull; the caller holds _running, which this releases."""
+    status[series_id] = {"state": "running", "message": "Pulling payments from Square...", "at": sync.now(),
+                         "auto": auto}
+    try:
+        client = client_factory()
+        try:
+            with db.session() as conn:
+                r = pull_series(conn, client, series_id, since)
+        finally:
+            getattr(client, "close", lambda: None)()
+        message = f"{r['new']} new and {r['updated']} updated payments across {r['tournaments']} tournaments"
+        if r["linked"]:
+            message += f", {r['linked']} linked automatically"
+        status[series_id] = {"state": "done", "message": message, "at": sync.now(), "auto": auto}
+    except Exception as e:  # shown on the series page; never includes the token
+        detail = str(e) if isinstance(e, (SquareConfigError, SquareRateLimited)) else f"{type(e).__name__}: {e}"
+        status[series_id] = {"state": "error", "message": detail, "at": sync.now(), "auto": auto}
+        log.warning("Square pull for series %s failed: %s", series_id, detail)
+    finally:
+        _running.release()
+
+
+def start_series_pull(series_id: int, client_factory) -> bool:
+    """Pull a whole series in the background. False when a Square pull is already running."""
+    if not _running.acquire(blocking=False):
+        return False
+    status[series_id] = {"state": "running", "message": "Pulling payments from Square...", "at": sync.now(),
+                         "auto": False}
+    threading.Thread(target=_work, args=(series_id, client_factory, None, False), daemon=True).start()
+    return True
+
+
+def auto_pull_once(client_factory, days: int = AUTO_PULL_DAYS):
+    """Pull recent tournaments of every tracked series, one series after another."""
+    if not config.square_token():
+        return
+    try:
+        environment()
+    except SquareConfigError as e:
+        log.warning("Automatic Square pull skipped: %s", e)
+        return
+    since = (datetime.now(ZoneInfo(config.TIMEZONE)).date() - timedelta(days=days)).isoformat()
+    with db.session() as conn:
+        series = [r[0] for r in conn.execute(
+            """SELECT DISTINCT s.id FROM series s JOIN tournament t ON t.series_id=s.id
+               WHERE s.tracked=1 AND t.excluded=0 AND t.start_date >= ? ORDER BY s.id""", (since,))]
+    for series_id in series:
+        if _running.acquire(blocking=False):  # a manual pull in progress? skip this series until next time
+            _work(series_id, client_factory, since, True)
+
+
+def auto_pull_loop(stop: threading.Event, client_factory, hours: float):
+    """Every `hours` (first run shortly after startup) until `stop` is set."""
+    wait = AUTO_PULL_FIRST_DELAY
+    while not stop.wait(wait):
+        try:
+            auto_pull_once(client_factory)
+        except Exception:
+            log.exception("Automatic Square pull failed")
+        wait = hours * 3600
 
 
 def expected_by_player(conn, tournament_id: str) -> dict:

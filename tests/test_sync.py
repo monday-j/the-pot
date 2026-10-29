@@ -163,8 +163,10 @@ def test_incomplete_event_is_flagged(conn):
 
 
 def set_venue(conn, flat=2000, entry="10", bracket="10", fee=500):
-    conn.execute("UPDATE series SET venue_name='The Hall', venue_flat_cents=?, venue_entry_pct=?, "
-                 "venue_bracket_pct=?, entry_fee_cents=? WHERE id=1", (flat, entry, bracket, fee))
+    conn.execute("INSERT INTO venue (id, name, flat_cents, entry_pct, bracket_pct) VALUES (1,'The Hall',?,?,?) "
+                 "ON CONFLICT(id) DO UPDATE SET flat_cents=excluded.flat_cents, entry_pct=excluded.entry_pct, "
+                 "bracket_pct=excluded.bracket_pct", (flat, entry, bracket))
+    conn.execute("UPDATE series SET venue_id=1, entry_fee_cents=? WHERE id=1", (fee,))
 
 
 def venue_row(conn, tid="t1"):
@@ -328,3 +330,47 @@ def test_merge_refuses_players_from_the_same_event(conn):
 def test_tag_key_ignores_case_and_punctuation():
     assert sync.tag_key("alice ") == sync.tag_key("Alice") == sync.tag_key("A.lice")
     assert sync.tag_key("Alice") != sync.tag_key("Alicia")
+
+
+def test_init_moves_series_venues_into_the_venue_table(tmp_path, monkeypatch):
+    import sqlite3
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(config, "DB_PATH", tmp_path / "pot.db")
+    db.init()
+    c = sqlite3.connect(tmp_path / "pot.db")  # foreign keys off, as an old database was written
+    c.execute("DROP TABLE venue")  # as it was before venues existed
+    for i, (name, venue, flat, entry) in enumerate([("FNB", "The Hall", 2000, "10"), ("SNS", "The Hall", 2000, "10"),
+                                                    ("TTT", "The Hall", 500, "0"), ("WED", "", 0, "5"),
+                                                    ("NON", "", 0, "0")], 1):
+        c.execute("INSERT INTO series (id, name, code, pattern, venue_name, venue_flat_cents, venue_entry_pct)"
+                  " VALUES (?,?,?,?,?,?,?)", (i, name, name, "x", venue, flat, entry))
+    c.execute("INSERT INTO tournament (id, series_id, name) VALUES ('t1', 1, 'x')")
+    c.execute("INSERT INTO venue_payment (tournament_id, amount_cents, computed_cents, status) VALUES ('t1',2400,2400,'paid')")
+    c.commit()
+    c.close()
+    db.init()
+    db.init()  # idempotent
+    c = db.connect()
+    venues = {r["name"]: (r["flat_cents"], r["entry_pct"]) for r in c.execute("SELECT * FROM venue")}
+    assert venues == {"The Hall": (2000, "10"), "The Hall (TTT)": (500, "0"), "WED venue": (0, "5")}
+    by_series = {r["code"]: r["vname"] for r in c.execute(
+        "SELECT s.code, v.name AS vname FROM series s LEFT JOIN venue v ON v.id=s.venue_id")}
+    assert by_series == {"FNB": "The Hall", "SNS": "The Hall", "TTT": "The Hall (TTT)", "WED": "WED venue", "NON": None}
+    assert c.execute("SELECT v.name FROM venue_payment vp JOIN venue v ON v.id=vp.venue_id").fetchone()[0] == "The Hall"
+    assert c.execute("SELECT COUNT(*) FROM series WHERE venue_name != ''").fetchone()[0] == 0
+    c.close()
+
+
+def test_tournament_held_at_another_venue(conn):
+    set_venue(conn)
+    conn.execute("INSERT INTO venue (id, name, flat_cents) VALUES (2, 'Pop-up', 700)")
+    sync.sync_series(conn, FakeClient(), 1)
+    conn.execute("UPDATE tournament SET venue_id=2 WHERE id='t1'")
+    sync.recompute_venue(conn, "t1")
+    row = venue_row(conn)
+    assert (row["venue_id"], row["amount_cents"]) == (2, 700)
+    conn.execute("UPDATE venue_payment SET status='paid'")
+    conn.execute("UPDATE tournament SET venue_id=NULL WHERE id='t1'")
+    sync.recompute_venue(conn, "t1")
+    row = venue_row(conn)
+    assert (row["venue_id"], row["amount_cents"], row["computed_cents"]) == (2, 700, 2400)  # paid stays with Pop-up

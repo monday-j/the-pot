@@ -1,9 +1,18 @@
 import sqlite3
 from contextlib import contextmanager
+from decimal import Decimal
 
 from . import codes, config
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS venue (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    notes TEXT NOT NULL DEFAULT '',
+    flat_cents INTEGER NOT NULL DEFAULT 0,
+    entry_pct TEXT NOT NULL DEFAULT '0',
+    bracket_pct TEXT NOT NULL DEFAULT '0'
+);
 CREATE TABLE IF NOT EXISTS series (
     id INTEGER PRIMARY KEY,
     name TEXT NOT NULL,
@@ -13,6 +22,8 @@ CREATE TABLE IF NOT EXISTS series (
     tracked INTEGER NOT NULL DEFAULT 0,
     entry_fee_cents INTEGER NOT NULL DEFAULT 0,
     last_synced TEXT,
+    venue_id INTEGER REFERENCES venue(id) ON DELETE SET NULL,
+    -- legacy per-series venue, moved into the venue table by _migrate_venues and no longer read
     venue_name TEXT NOT NULL DEFAULT '',
     venue_flat_cents INTEGER NOT NULL DEFAULT 0,
     venue_entry_pct TEXT NOT NULL DEFAULT '0',
@@ -29,6 +40,7 @@ CREATE TABLE IF NOT EXISTS tournament (
     manual INTEGER NOT NULL DEFAULT 0,
     entry_fee_cents INTEGER,
     venue_mode TEXT NOT NULL DEFAULT 'series',
+    venue_id INTEGER REFERENCES venue(id) ON DELETE SET NULL,
     venue_flat_cents INTEGER NOT NULL DEFAULT 0,
     venue_entry_pct TEXT NOT NULL DEFAULT '0',
     venue_bracket_pct TEXT NOT NULL DEFAULT '0'
@@ -85,6 +97,7 @@ CREATE TABLE IF NOT EXISTS payout (
 );
 CREATE TABLE IF NOT EXISTS venue_payment (
     tournament_id TEXT PRIMARY KEY REFERENCES tournament(id) ON DELETE CASCADE,
+    venue_id INTEGER REFERENCES venue(id) ON DELETE SET NULL,
     amount_cents INTEGER NOT NULL,
     computed_cents INTEGER NOT NULL,
     status TEXT NOT NULL DEFAULT 'owed',
@@ -135,6 +148,7 @@ ADDED_COLUMNS = {
     "series": {
         "code": "TEXT NOT NULL DEFAULT ''",
         "custom_slug": "TEXT NOT NULL DEFAULT ''",
+        "venue_id": "INTEGER REFERENCES venue(id) ON DELETE SET NULL",
         "venue_name": "TEXT NOT NULL DEFAULT ''",
         "venue_flat_cents": "INTEGER NOT NULL DEFAULT 0",
         "venue_entry_pct": "TEXT NOT NULL DEFAULT '0'",
@@ -148,9 +162,13 @@ ADDED_COLUMNS = {
     },
     "tournament": {
         "venue_mode": "TEXT NOT NULL DEFAULT 'series'",
+        "venue_id": "INTEGER REFERENCES venue(id) ON DELETE SET NULL",
         "venue_flat_cents": "INTEGER NOT NULL DEFAULT 0",
         "venue_entry_pct": "TEXT NOT NULL DEFAULT '0'",
         "venue_bracket_pct": "TEXT NOT NULL DEFAULT '0'",
+    },
+    "venue_payment": {
+        "venue_id": "INTEGER REFERENCES venue(id) ON DELETE SET NULL",
     },
 }
 
@@ -173,9 +191,35 @@ def _backfill_series_codes(conn):
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_series_code ON series(code) WHERE code != ''")
 
 
+def _migrate_venues(conn):
+    """Move each series' own venue name and cut into the venue table (one venue per distinct name and cut),
+    then clear the old columns so this runs once per series."""
+    legacy = conn.execute("""SELECT id, name, code, venue_name, venue_flat_cents, venue_entry_pct, venue_bracket_pct
+                             FROM series WHERE venue_id IS NULL ORDER BY id""").fetchall()
+    for s in legacy:
+        cut = (s["venue_flat_cents"], Decimal(s["venue_entry_pct"] or "0"), Decimal(s["venue_bracket_pct"] or "0"))
+        if not s["venue_name"].strip() and not any(cut):
+            continue
+        name = s["venue_name"].strip() or f"{s['name']} venue"
+        venue = conn.execute("SELECT * FROM venue WHERE name=?", (name,)).fetchone()
+        if venue and (venue["flat_cents"], Decimal(venue["entry_pct"]), Decimal(venue["bracket_pct"])) != cut:
+            name, venue = f"{name} ({s['code'] or s['id']})", None  # same name, different deal: keep both
+        if venue is None:
+            venue_id = conn.execute("INSERT INTO venue (name, flat_cents, entry_pct, bracket_pct) VALUES (?,?,?,?)",
+                                    (name, cut[0], str(cut[1]), str(cut[2]))).lastrowid
+        else:
+            venue_id = venue["id"]
+        conn.execute("""UPDATE series SET venue_id=?, venue_name='', venue_flat_cents=0, venue_entry_pct='0',
+                        venue_bracket_pct='0' WHERE id=?""", (venue_id, s["id"]))
+    conn.execute("""UPDATE venue_payment SET venue_id=(
+                        SELECT COALESCE(t.venue_id, s.venue_id) FROM tournament t LEFT JOIN series s ON s.id=t.series_id
+                        WHERE t.id=venue_payment.tournament_id) WHERE venue_id IS NULL""")
+
+
 def init():
     with session() as conn:
         conn.executescript(SCHEMA)
         _add_columns(conn)
         conn.executescript(VIEWS)
         _backfill_series_codes(conn)
+        _migrate_venues(conn)

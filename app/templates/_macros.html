@@ -2,6 +2,7 @@
 {% macro event(id, name) %}<a href="/events/{{ id }}">{{ name }}</a>{% endmacro %}
 {% macro tournament(id, name) %}<a href="/tournaments/{{ id }}">{{ name }}</a>{% endmacro %}
 {% macro series(id, name, code="") %}{% if id %}<a href="/series/{{ code or id }}" title="{{ name }}">{{ code or name }}</a>{% else %}<span class="mut">-</span>{% endif %}{% endmacro %}
+{% macro venue(id, name) %}{% if id %}<a href="/venues/{{ id }}">{{ name }}</a>{% else %}<span class="mut">-</span>{% endif %}{% endmacro %}
 {% macro game(name) %}{% if name %}<a href="/games/{{ name|urlq }}">{{ name }}</a>{% else %}<span class="mut">-</span>{% endif %}{% endmacro %}
 {% macro parry(slug, event_slug="", label="View on parry.gg") %}{% if slug %}<a href="https://parry.gg/{{ slug|urlq }}{% if event_slug %}/{{ event_slug|urlq }}{% endif %}" target="_blank" rel="noopener noreferrer">{{ label }} ↗</a>{% endif %}{% endmacro %}
 {% macro mtd(cents, cls="") %}<td class="r {{ cls }}" data-v="{{ cents or 0 }}">{% if cents %}{{ cents|money }}{% else %}<span class="mut">·</span>{% endif %}</td>{% endmacro %}

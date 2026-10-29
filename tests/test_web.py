@@ -73,7 +73,7 @@ def seeded(client):
 
 
 @pytest.mark.parametrize("url", ["/", "/series", "/series/1", "/tournaments/t1", "/events/e1", "/events", "/games",
-                                 "/games/Smash%20Ultimate", "/players", "/players/u1", "/payouts"])
+                                 "/games/Smash%20Ultimate", "/players", "/players/u1", "/payouts", "/venues"])
 def test_every_page_renders(seeded, url):
     assert seeded.get(url).status_code == 200
 
@@ -113,16 +113,20 @@ def test_inline_payment_returns_to_page_but_only_locally(seeded):
 
 
 def settings(**kw):
-    base = {"name": "FNB", "custom_slug": "fnb", "pattern": "", "entry_fee": "5", "venue_name": "The Hall",
-            "venue_flat": "20", "venue_entry_pct": "10", "venue_bracket_pct": "10"}
+    base = {"name": "FNB", "custom_slug": "fnb", "pattern": "", "entry_fee": "5", "venue_id": ""}
     return {**base, **kw}
 
 
+def add_venue(client, **kw):
+    return client.post("/venues", data={"name": "The Hall", "flat": "20", "entry_pct": "10", "bracket_pct": "10", **kw})
+
+
 def test_venue_flow(seeded):
-    r = seeded.post("/series/1/settings", data=settings(venue_entry_pct="150"))
-    assert "Venue % of entry fees must be between 0 and 100" in r.text
+    assert "Venue % of entry fees must be between 0 and 100" in add_venue(seeded, entry_pct="150").text
+    assert "Unknown venue" in seeded.post("/series/1/settings", data=settings(venue_id="1")).text
+    add_venue(seeded)
     assert seeded.get("/venue").text.count("Mark paid") == 0
-    assert seeded.post("/series/1/settings", data=settings()).status_code == 200
+    assert seeded.post("/series/1/settings", data=settings(venue_id="1")).status_code == 200
     page = seeded.get("/venue").text
     assert "The Hall" in page and "$24.00" in page and page.count("Mark paid") == 1
     for url in ("/", "/series/1", "/tournaments/t1", "/venue?status=owed&series=1"):
@@ -141,12 +145,13 @@ def test_venue_flow(seeded):
 
 
 def test_tournament_venue_override(seeded):
-    seeded.post("/series/1/settings", data=settings())
+    add_venue(seeded)
+    seeded.post("/series/1/settings", data=settings(venue_id="1"))
     seeded.post("/tournaments/t1/venue", data={"venue_mode": "none"})
     assert "No venue payments" in seeded.get("/venue").text
     seeded.post("/tournaments/t1/venue", data={"venue_mode": "custom", "venue_flat": "7"})
     assert "$7.00" in seeded.get("/venue").text
-    assert "Venue for this tournament" in seeded.get("/tournaments/t1").text
+    assert "Venue cut for this tournament" in seeded.get("/tournaments/t1").text
     r = seeded.post("/tournaments/t1/venue", data={"venue_mode": "custom", "venue_flat": "-1"})
     assert "cannot be negative" in r.text
     assert "Unknown venue setting" in seeded.post("/tournaments/t1/venue", data={"venue_mode": "x"}).text
@@ -175,7 +180,8 @@ def test_init_upgrades_an_old_schema(tmp_path, monkeypatch):
 
 
 def test_dashboard_shows_total_owed_to_players_and_venues(seeded):
-    seeded.post("/series/1/settings", data=settings())
+    add_venue(seeded)
+    seeded.post("/series/1/settings", data=settings(venue_id="1"))
     page = seeded.get("/").text
     # 4 player payouts ($26 pool) + venue payable ($24.00)
     assert "Total owed" in page and "$50.00" in page and "$26.00 to players + $24.00 to venues" in page
@@ -267,3 +273,34 @@ def test_merge_players_pages(client, monkeypatch):
     page = client.post("/players/u5/unmerge").text
     assert "No other players merged" in page
     assert client.get("/players/u5").status_code == 200
+
+
+def test_venues_pages_and_one_off_venue(seeded):
+    add_venue(seeded)
+    assert "already a venue called" in add_venue(seeded, name="the hall").text
+    add_venue(seeded, name="Pop-up Bar", flat="50", entry_pct="0", bracket_pct="0")
+    seeded.post("/series/1/settings", data=settings(venue_id="1"))
+    page = seeded.get("/venues").text
+    assert 'href="/venues/1"' in page and 'href="/venues/2"' in page and "$24.00" in page
+    page = seeded.get("/venues/1").text
+    assert 'href="/tournaments/t1"' in page and 'href="/series/FNB"' in page
+
+    # this week's tournament is held somewhere else
+    seeded.post("/tournaments/t1/venue", data={"venue_mode": "series", "venue_id": "2"})
+    assert "$50.00" in seeded.get("/venues/2").text and "one-off" in seeded.get("/venues/2").text
+    assert "No tournaments held here" in seeded.get("/venues/1").text
+    page = seeded.get("/venue?venue=2").text
+    assert "Pop-up Bar" in page and "$50.00" in page and "$24.00" not in seeded.get("/venue?venue=2").text
+
+
+def test_editing_a_venue_reprices_unpaid_but_not_paid(seeded):
+    add_venue(seeded)
+    seeded.post("/series/1/settings", data=settings(venue_id="1"))
+    seeded.post("/venue/t1/paid")
+    seeded.post("/venues/1", data={"name": "The Hall", "flat": "30", "entry_pct": "10", "bracket_pct": "10"})
+    page = seeded.get("/venues/1").text
+    assert "$24.00" in page and "≠ $34.00" in page  # paid amount kept, new maths flagged
+    seeded.post("/venue/t1/paid", data={"undo": "1"})
+    assert "$34.00" in seeded.get("/venue?status=owed").text
+    assert "Enter a venue name" in seeded.post("/venues/1", data={"name": " "}).text
+    assert seeded.get("/venues/99").status_code == 404

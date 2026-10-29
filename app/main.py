@@ -57,6 +57,20 @@ def parse_venue(flat: str, entry_pct: str, bracket_pct: str) -> VenueCut:
     return cut
 
 
+def pick_venue(conn, text: str) -> int | None:
+    """A venue id from a form select ("" means none)."""
+    if not text.strip():
+        return None
+    row = conn.execute("SELECT id FROM venue WHERE id=?", (text.strip(),)).fetchone()
+    if row is None:
+        raise RuleError("Unknown venue")
+    return row["id"]
+
+
+def venue_options(conn):
+    return conn.execute("SELECT id, name FROM venue ORDER BY name COLLATE NOCASE").fetchall()
+
+
 def to_pct(text: str) -> Decimal:
     try:
         return Decimal(text.strip() or "0")
@@ -203,7 +217,8 @@ def series_page(request: Request, ref: str):
             query = request.url.query
             return RedirectResponse(f"/series/{s['code']}" + (f"?{query}" if query else ""), status_code=307)
         series_id = s["id"]
-        s = one(conn, f"SELECT s.*, {SERIES_SUMS} FROM series s WHERE s.id=?", series_id)
+        s = one(conn, f"""SELECT s.*, v.name AS venue, {SERIES_SUMS} FROM series s
+                          LEFT JOIN venue v ON v.id=s.venue_id WHERE s.id=?""", series_id)
         issues = sync.event_issues(conn, series_id=series_id)
         by_tournament = flags_by(issues, "tournament_id")
         tournaments = []
@@ -229,26 +244,26 @@ def series_page(request: Request, ref: str):
         events = conn.execute("""SELECT e.id, e.name, t.name AS tname FROM event e JOIN tournament t
                                  ON t.id=e.tournament_id WHERE t.series_id=? ORDER BY t.start_date DESC""",
                               (series_id,)).fetchall()
+        venues = venue_options(conn)
     return render(request, "series.html", s=s, tournaments=tournaments, games=games, game_rules=game_rules,
-                  rules=rules, events=events, sync_status=sync.status.get(series_id), issues=issues)
+                  rules=rules, events=events, sync_status=sync.status.get(series_id), issues=issues,
+                  venues=venues)
 
 
 @app.post("/series/{series_id}/settings")
 def series_settings(series_id: int, name: str = Form(...), code: str = Form(""), pattern: str = Form(""),
-                    custom_slug: str = Form(""), entry_fee: str = Form("0"), venue_name: str = Form(""), venue_flat: str = Form("0"),
-                    venue_entry_pct: str = Form("0"), venue_bracket_pct: str = Form("0")):
+                    custom_slug: str = Form(""), entry_fee: str = Form("0"), venue_id: str = Form("")):
     if not pattern.strip() and not custom_slug.strip():
         return back(f"/series/{series_id}", "Enter a custom slug or a match pattern")
     try:
         fee = dollars_to_cents(entry_fee)
-        cut = parse_venue(venue_flat, venue_entry_pct, venue_bracket_pct)
         with db.session() as conn:
             current = one(conn, "SELECT id, code FROM series WHERE id=?", series_id)
             code = claim_code(conn, code, series_id) if code.strip() else current["code"]
-            conn.execute("""UPDATE series SET name=?, code=?, pattern=?, custom_slug=?, entry_fee_cents=?, venue_name=?,
-                            venue_flat_cents=?, venue_entry_pct=?, venue_bracket_pct=? WHERE id=?""",
-                         (name.strip(), code, pattern.strip(), custom_slug.strip(), fee, venue_name.strip(), cut.flat,
-                          str(cut.entry_pct), str(cut.bracket_pct), series_id))
+            conn.execute("""UPDATE series SET name=?, code=?, pattern=?, custom_slug=?, entry_fee_cents=?, venue_id=?
+                            WHERE id=?""",
+                         (name.strip(), code, pattern.strip(), custom_slug.strip(), fee, pick_venue(conn, venue_id),
+                          series_id))
             sync.recompute_series(conn, series_id)
     except RuleError as e:
         return back(f"/series/{series_id}", str(e))
@@ -315,17 +330,18 @@ def tournament_entry_fee(tournament_id: str, entry_fee: str = Form("")):
 
 
 @app.post("/tournaments/{tournament_id}/venue")
-def tournament_venue(tournament_id: str, venue_mode: str = Form("series"), venue_flat: str = Form("0"),
-                     venue_entry_pct: str = Form("0"), venue_bracket_pct: str = Form("0")):
+def tournament_venue(tournament_id: str, venue_mode: str = Form("series"), venue_id: str = Form(""),
+                     venue_flat: str = Form("0"), venue_entry_pct: str = Form("0"), venue_bracket_pct: str = Form("0")):
     try:
         if venue_mode not in ("series", "custom", "none"):
             raise RuleError("Unknown venue setting")
         cut = parse_venue(venue_flat, venue_entry_pct, venue_bracket_pct)
         with db.session() as conn:
             one(conn, "SELECT id FROM tournament WHERE id=?", tournament_id)
-            conn.execute("""UPDATE tournament SET venue_mode=?, venue_flat_cents=?, venue_entry_pct=?,
+            conn.execute("""UPDATE tournament SET venue_mode=?, venue_id=?, venue_flat_cents=?, venue_entry_pct=?,
                             venue_bracket_pct=? WHERE id=?""",
-                         (venue_mode, cut.flat, str(cut.entry_pct), str(cut.bracket_pct), tournament_id))
+                         (venue_mode, pick_venue(conn, venue_id), cut.flat, str(cut.entry_pct), str(cut.bracket_pct),
+                          tournament_id))
             sync.recompute_venue(conn, tournament_id)
     except RuleError as e:
         return back(f"/tournaments/{tournament_id}", str(e))
@@ -380,8 +396,10 @@ def delete_rule(rule_id: int):
 @app.get("/tournaments/{tournament_id}")
 def tournament_page(request: Request, tournament_id: str):
     with db.session() as conn:
-        t = one(conn, """SELECT t.*, s.name AS series_name, s.code AS series_code, s.entry_fee_cents AS series_fee FROM tournament t
-                         LEFT JOIN series s ON s.id=t.series_id WHERE t.id=?""", tournament_id)
+        t = one(conn, """SELECT t.*, s.name AS series_name, s.code AS series_code, s.entry_fee_cents AS series_fee,
+                                v.name AS series_venue FROM tournament t
+                         LEFT JOIN series s ON s.id=t.series_id LEFT JOIN venue v ON v.id=s.venue_id
+                         WHERE t.id=?""", tournament_id)
         flagged = {i["id"]: i["reason"] for i in sync.event_issues(conn, tournament_id=tournament_id)}
         events = []
         for e in conn.execute(f"SELECT e.*, {EVENT_SUMS} FROM event e WHERE e.tournament_id=? ORDER BY e.name",
@@ -411,7 +429,9 @@ def tournament_page(request: Request, tournament_id: str):
                                                             info["bracket_collected"]),
                      "payment": conn.execute("SELECT * FROM venue_payment WHERE tournament_id=?",
                                              (tournament_id,)).fetchone()}
-    return render(request, "tournament.html", t=t, events=events, attendees=list(attendees.values()), venue=venue)
+        venues = venue_options(conn)
+    return render(request, "tournament.html", t=t, events=events, attendees=list(attendees.values()), venue=venue,
+                  venues=venues)
 
 
 @app.get("/events")
@@ -638,14 +658,87 @@ def settle_all(player_id: str, note: str = Form(""), next: str = Form("")):
     return back(safe_next(next, f"/players/{player_id}"))
 
 
+VENUE_SUMS = """(SELECT COUNT(*) FROM series s WHERE s.venue_id=v.id) AS series,
+    (SELECT COUNT(*) FROM tournament t LEFT JOIN series s ON s.id=t.series_id
+     WHERE COALESCE(t.venue_id, s.venue_id)=v.id AND t.venue_mode != 'none' AND t.excluded=0) AS tournaments,
+    (SELECT MAX(t.start_date) FROM tournament t LEFT JOIN series s ON s.id=t.series_id
+     WHERE COALESCE(t.venue_id, s.venue_id)=v.id AND t.venue_mode != 'none' AND t.excluded=0) AS last_date,
+    COALESCE((SELECT SUM(amount_cents) FROM venue_payment WHERE venue_id=v.id AND status='owed'),0) AS owed,
+    COALESCE((SELECT SUM(amount_cents) FROM venue_payment WHERE venue_id=v.id AND status='paid'),0) AS paid"""
+
+
+@app.get("/venues")
+def venues_page(request: Request):
+    with db.session() as conn:
+        venues = conn.execute(f"SELECT v.*, {VENUE_SUMS} FROM venue v ORDER BY v.name COLLATE NOCASE").fetchall()
+    return render(request, "venues.html", venues=venues)
+
+
+def save_venue_form(conn, venue_id, name, notes, flat, entry_pct, bracket_pct) -> int:
+    name = name.strip()
+    if not name:
+        raise RuleError("Enter a venue name")
+    other = conn.execute("SELECT id FROM venue WHERE name=? COLLATE NOCASE AND id IS NOT ?", (name, venue_id)).fetchone()
+    if other:
+        raise RuleError(f"There is already a venue called {name}")
+    cut = parse_venue(flat, entry_pct, bracket_pct)
+    values = (name, notes.strip(), cut.flat, str(cut.entry_pct), str(cut.bracket_pct))
+    if venue_id is None:
+        return conn.execute("INSERT INTO venue (name, notes, flat_cents, entry_pct, bracket_pct) VALUES (?,?,?,?,?)",
+                            values).lastrowid
+    conn.execute("UPDATE venue SET name=?, notes=?, flat_cents=?, entry_pct=?, bracket_pct=? WHERE id=?",
+                 (*values, venue_id))
+    sync.recompute_venue_tournaments(conn, venue_id)
+    return venue_id
+
+
+@app.post("/venues")
+def create_venue(name: str = Form(...), notes: str = Form(""), flat: str = Form("0"), entry_pct: str = Form("0"),
+                 bracket_pct: str = Form("0")):
+    try:
+        with db.session() as conn:
+            venue_id = save_venue_form(conn, None, name, notes, flat, entry_pct, bracket_pct)
+    except RuleError as e:
+        return back("/venues", str(e))
+    return back(f"/venues/{venue_id}")
+
+
+@app.get("/venues/{venue_id}")
+def venue_detail(request: Request, venue_id: int):
+    with db.session() as conn:
+        v = one(conn, f"SELECT v.*, {VENUE_SUMS} FROM venue v WHERE v.id=?", venue_id)
+        series = conn.execute(f"SELECT s.*, {SERIES_SUMS} FROM series s WHERE s.venue_id=? ORDER BY s.name",
+                              (venue_id,)).fetchall()
+        tournaments = conn.execute(f"""SELECT t.*, s.name AS series_name, s.code AS series_code, {TOURNAMENT_SUMS}
+                                       FROM tournament t LEFT JOIN series s ON s.id=t.series_id
+                                       WHERE (COALESCE(t.venue_id, s.venue_id)=? AND t.venue_mode != 'none'
+                                              AND t.excluded=0)
+                                          OR t.id IN (SELECT tournament_id FROM venue_payment WHERE venue_id=?)
+                                       ORDER BY t.start_date DESC""", (venue_id, venue_id)).fetchall()
+    return render(request, "venue_detail.html", v=v, series=series, tournaments=tournaments)
+
+
+@app.post("/venues/{venue_id}")
+def update_venue(venue_id: int, name: str = Form(...), notes: str = Form(""), flat: str = Form("0"),
+                 entry_pct: str = Form("0"), bracket_pct: str = Form("0")):
+    try:
+        with db.session() as conn:
+            one(conn, "SELECT id FROM venue WHERE id=?", venue_id)
+            save_venue_form(conn, venue_id, name, notes, flat, entry_pct, bracket_pct)
+    except RuleError as e:
+        return back(f"/venues/{venue_id}", str(e))
+    return back(f"/venues/{venue_id}")
+
+
 @app.get("/venue")
-def venue_page(request: Request, status: str = "", series: int | None = None):
-    sql = """SELECT vp.*, t.id AS tid, t.name AS tname, t.start_date, t.series_id, s.name AS sname, s.code AS scode, s.venue_name
+def venue_page(request: Request, status: str = "", series: int | None = None, venue: int | None = None):
+    sql = """SELECT vp.*, t.id AS tid, t.name AS tname, t.start_date, t.series_id, s.name AS sname, s.code AS scode,
+                    v.name AS venue_name
              FROM venue_payment vp JOIN tournament t ON t.id=vp.tournament_id
-             LEFT JOIN series s ON s.id=t.series_id WHERE 1=1"""
+             LEFT JOIN series s ON s.id=t.series_id LEFT JOIN venue v ON v.id=vp.venue_id WHERE 1=1"""
     args = []
     for clause, value in ((" AND vp.status=?", status if status in ("owed", "paid") else ""),
-                          (" AND t.series_id=?", series)):
+                          (" AND t.series_id=?", series), (" AND vp.venue_id=?", venue)):
         if value not in ("", None):
             sql += clause
             args.append(value)
@@ -656,7 +749,9 @@ def venue_page(request: Request, status: str = "", series: int | None = None):
             rows.append({"r": r, "entry": info["entry_collected"] if info else 0,
                          "bracket": info["bracket_collected"] if info else 0})
         series_opts = conn.execute("SELECT id, name, code FROM series ORDER BY name").fetchall()
-    return render(request, "venue.html", rows=rows, series_opts=series_opts, f_status=status, f_series=series,
+        venue_opts = venue_options(conn)
+    return render(request, "venue.html", rows=rows, series_opts=series_opts, venue_opts=venue_opts,
+                  f_status=status, f_series=series, f_venue=venue,
                   owed=sum(x["r"]["amount_cents"] for x in rows if x["r"]["status"] == "owed"),
                   paid=sum(x["r"]["amount_cents"] for x in rows if x["r"]["status"] == "paid"))
 

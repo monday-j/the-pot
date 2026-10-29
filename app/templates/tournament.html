@@ -7,7 +7,7 @@
 <form method="post" action="/tournaments/{{ t.id }}/entry-fee" class="toolbar">
 <label>Entry fee override ($, blank = series fee {{ (t.series_fee or 0)|money }})<input name="entry_fee" value="{{ '' if t.entry_fee_cents is none else '%.2f' % (t.entry_fee_cents / 100) }}" size="8"></label>
 <button class="sec">Save</button></form>
-{% if venue %}<h2>Venue{% if venue.info.venue_name %} <span class="n">· {{ venue.info.venue_name }}</span>{% endif %}</h2>
+{% if venue %}<h2>Venue{% if venue.info.venue_id %} <span class="n">· {{ m.venue(venue.info.venue_id, venue.info.venue_name) }}</span>{% endif %}</h2>
 <table class="kv">
 <tr><th>Flat per tournament</th><td>{{ venue.parts.flat|money }}</td></tr>
 <tr><th>{{ venue.info.cut.entry_pct }}% of entry fees ({{ venue.info.entry_fee|money }} × {{ venue.info.attendees }} attendees = {{ venue.info.entry_collected|money }})</th><td>{{ venue.parts.entry_share|money }}</td></tr>
@@ -18,8 +18,10 @@
 {% if venue.info.unruled %}<p class="help">No payout rule for {{ venue.info.unruled|join(", ") }}, so its bracket fees are counted as $0 here.</p>{% endif %}
 {% endif %}
 <form method="post" action="/tournaments/{{ t.id }}/venue" class="toolbar">
-<label>Venue for this tournament<select name="venue_mode">
-<option value="series" {{ "selected" if t.venue_mode == "series" }}>Use series setting</option>
+<label>Held at<select name="venue_id"><option value="">Series venue ({{ t.series_venue or "none" }})</option>
+{% for v in venues %}<option value="{{ v.id }}" {{ "selected" if v.id == t.venue_id }}>{{ v.name }}</option>{% endfor %}</select></label>
+<label>Venue cut for this tournament<select name="venue_mode">
+<option value="series" {{ "selected" if t.venue_mode == "series" }}>The venue's usual cut</option>
 <option value="custom" {{ "selected" if t.venue_mode == "custom" }}>Custom</option>
 <option value="none" {{ "selected" if t.venue_mode == "none" }}>No venue</option></select></label>
 <label>Custom flat $<input name="venue_flat" value="{{ '%.2f' % (t.venue_flat_cents / 100) }}" size="7"></label>

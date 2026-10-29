@@ -5,7 +5,7 @@
 <h1>{{ s.name }} <span class="tag">{{ s.code }}</span> <span class="tag">{{ "tracked" if s.tracked else "not tracked" }}</span></h1>
 {% if sync_status %}<div class="strip {{ 'err' if sync_status.state == 'error' }}">{{ sync_status.message }}</div>{% endif %}
 <div class="summary"><span><b>{{ s.n }}</b> tournaments</span><span><b>{{ s.events }}</b> events</span><span><b class="warn">{{ s.owed|money }}</b> owed</span><span><b class="ok">{{ s.paid|money }}</b> paid</span>
-<span><b class="warn">{{ s.venue_owed|money }}</b> owed to venue</span><span><b class="ok">{{ s.venue_paid|money }}</b> paid to venue</span>
+{% if s.venue_id %}<span>venue: {{ m.venue(s.venue_id, s.venue) }}</span>{% endif %}<span><b class="warn">{{ s.venue_owed|money }}</b> owed to venue</span><span><b class="ok">{{ s.venue_paid|money }}</b> paid to venue</span>
 <span>last synced {{ (s.last_synced or "never")[:16] }}</span></div>
 <div class="toolbar"><form class="inline" method="post" action="/series/{{ s.id }}/sync"><button>Import / sync now</button></form>
 <form class="inline" method="post" action="/series/{{ s.id }}/track"><button class="sec">{{ "Stop tracking" if s.tracked else "Track this series" }}</button></form></div>
@@ -54,10 +54,8 @@
 <tr><th>Custom slug (quick link shared by the series)</th><td><input name="custom_slug" value="{{ s.custom_slug }}"></td></tr>
 <tr><th>Name pattern (fallback)</th><td><input name="pattern" value="{{ s.pattern }}"></td></tr>
 <tr><th>Entry fee ($, whole tournament)</th><td><input name="entry_fee" value="{{ '%.2f' % (s.entry_fee_cents / 100) }}" size="8"></td></tr>
-<tr><th>Venue name</th><td><input name="venue_name" value="{{ s.venue_name }}" placeholder="optional"></td></tr>
-<tr><th>Venue: flat $ per tournament</th><td><input name="venue_flat" value="{{ '%.2f' % (s.venue_flat_cents / 100) }}" size="8"></td></tr>
-<tr><th>Venue: % of entry fees collected (fee × attendees)</th><td><input name="venue_entry_pct" value="{{ s.venue_entry_pct }}" size="5"></td></tr>
-<tr><th>Venue: % of bracket fees collected (bracket fee × entrants, per event rule)</th><td><input name="venue_bracket_pct" value="{{ s.venue_bracket_pct }}" size="5"></td></tr>
+<tr><th>Venue</th><td><select name="venue_id"><option value="">No venue</option>{% for v in venues %}<option value="{{ v.id }}" {{ "selected" if v.id == s.venue_id }}>{{ v.name }}</option>{% endfor %}</select>
+{% if s.venue_id %} {{ m.venue(s.venue_id, "view venue") }}{% endif %} <a href="/venues">add a venue</a></td></tr>
 <tr><th></th><td><button>Save settings</button></td></tr></table></form>
-<p class="help">The venue's cut is the three venue amounts added together; leave any at 0. It is a separate payable per tournament (see <a href="/venue">Venue</a>) and does not change the prize pool. A tournament can override it, or have no venue.</p>
+<p class="help">The venue's cut is set on its <a href="/venues">venue page</a>. It is a separate payable per tournament (see the <a href="/venue">venue payments</a> ledger) and does not change the prize pool. A tournament can be held at a different venue, use a custom cut, or have no venue.</p>
 {% endblock %}

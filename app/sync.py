@@ -122,20 +122,23 @@ def recompute_event(conn, event_id: str):
 def venue_inputs(conn, tournament_id: str):
     """Everything the venue cut depends on, or None when this tournament has no venue.
 
-    Returns a dict: venue_name, cut, attendees, entry_fee, entry_collected, bracket_collected, unruled
+    The venue is the tournament's own pick, else its series' venue; a "custom" tournament uses its own cut there.
+    Returns a dict: venue_id, venue_name, cut, attendees, entry_fee, entry_collected, bracket_collected, unruled
     (names of events with no payout rule, whose bracket fee is therefore unknown and counted as $0).
     """
-    t = conn.execute("""SELECT t.*, s.venue_name AS s_name, s.venue_flat_cents AS s_flat,
-                               s.venue_entry_pct AS s_entry, s.venue_bracket_pct AS s_bracket,
-                               s.entry_fee_cents AS s_fee
-                        FROM tournament t LEFT JOIN series s ON s.id=t.series_id WHERE t.id=?""",
+    t = conn.execute("""SELECT t.*, v.id AS v_id, v.name AS v_name, v.flat_cents AS v_flat, v.entry_pct AS v_entry,
+                               v.bracket_pct AS v_bracket, s.entry_fee_cents AS s_fee
+                        FROM tournament t LEFT JOIN series s ON s.id=t.series_id
+                        LEFT JOIN venue v ON v.id=COALESCE(t.venue_id, s.venue_id) WHERE t.id=?""",
                      (tournament_id,)).fetchone()
     if not t or t["series_id"] is None or t["excluded"] or t["venue_mode"] == "none":
         return None
     if t["venue_mode"] == "custom":
         cut = VenueCut(t["venue_flat_cents"], Decimal(t["venue_entry_pct"]), Decimal(t["venue_bracket_pct"]))
+    elif t["v_id"] is None:
+        return None
     else:
-        cut = VenueCut(t["s_flat"], Decimal(t["s_entry"]), Decimal(t["s_bracket"]))
+        cut = VenueCut(t["v_flat"], Decimal(t["v_entry"]), Decimal(t["v_bracket"]))
     attendees = conn.execute("SELECT COUNT(*) FROM tournament_entry_c WHERE tournament_id=?",
                              (tournament_id,)).fetchone()[0] or t["num_attendees"]
     fee = t["entry_fee_cents"] if t["entry_fee_cents"] is not None else (t["s_fee"] or 0)
@@ -148,7 +151,7 @@ def venue_inputs(conn, tournament_id: str):
         entrants = conn.execute("SELECT COUNT(*) FROM event_entry_c WHERE event_id=?", (e["id"],)).fetchone()[0] \
             or e["entrant_count"]
         bracket += rule.bracket_fee * entrants
-    return {"venue_name": t["s_name"], "cut": cut, "attendees": attendees, "entry_fee": fee,
+    return {"venue_id": t["v_id"], "venue_name": t["v_name"], "cut": cut, "attendees": attendees, "entry_fee": fee,
             "entry_collected": fee * attendees, "bracket_collected": bracket, "unruled": unruled}
 
 
@@ -163,18 +166,28 @@ def recompute_venue(conn, tournament_id: str):
     calculation shows as a discrepancy; an unpaid row is removed when there is nothing to pay."""
     info = venue_inputs(conn, tournament_id)
     total = venue_total(info)
+    venue_id = info["venue_id"] if info else None
     row = conn.execute("SELECT * FROM venue_payment WHERE tournament_id=?", (tournament_id,)).fetchone()
     if row is None:
         if total:
-            conn.execute("INSERT INTO venue_payment (tournament_id, amount_cents, computed_cents) VALUES (?,?,?)",
-                         (tournament_id, total, total))
-    elif row["status"] == "paid":
+            conn.execute("INSERT INTO venue_payment (tournament_id, venue_id, amount_cents, computed_cents)"
+                         " VALUES (?,?,?,?)", (tournament_id, venue_id, total, total))
+    elif row["status"] == "paid":  # paid to whichever venue it was paid to
         conn.execute("UPDATE venue_payment SET computed_cents=? WHERE tournament_id=?", (total, tournament_id))
     elif total:
-        conn.execute("UPDATE venue_payment SET amount_cents=?, computed_cents=? WHERE tournament_id=?",
-                     (total, total, tournament_id))
+        conn.execute("UPDATE venue_payment SET venue_id=?, amount_cents=?, computed_cents=? WHERE tournament_id=?",
+                     (venue_id, total, total, tournament_id))
     else:
         conn.execute("DELETE FROM venue_payment WHERE tournament_id=?", (tournament_id,))
+
+
+def recompute_venue_tournaments(conn, venue_id: int):
+    """After a venue's cut changes: every tournament held there, plus any whose payable names it."""
+    for t in conn.execute("""SELECT t.id FROM tournament t LEFT JOIN series s ON s.id=t.series_id
+                             WHERE COALESCE(t.venue_id, s.venue_id)=?
+                             UNION SELECT tournament_id FROM venue_payment WHERE venue_id=?""",
+                          (venue_id, venue_id)).fetchall():
+        recompute_venue(conn, t[0])
 
 
 def recompute_series(conn, series_id: int):

@@ -25,11 +25,14 @@ you've paid them and what you still owe. Local-only (no auth), SQLite, run as a 
   either player's page; the Players page suggests tags that differ only in case or punctuation. The merged player's
   history and payouts show under the main one, including on future syncs, and Unmerge puts them back. Players who
   entered the same event can't be merged.
-- **Venue**: each series can have a venue name and a cut made of up to three parts that add together: a flat amount per
-  tournament, a % of entry fees collected (fee x attendees) and a % of bracket fees collected (each event's rule bracket
-  fee x entrants; events without a rule count as $0). It is a separate payable per tournament (it does not change the
-  prize pool), marked paid on the tournament page or the Venue ledger, and a tournament can override it or have no venue.
-  Like player payouts, a paid amount is never changed by a re-sync; a changed calculation shows a `≠` marker.
+- **Venues** are tracked on their own (Venues page: each venue's series, tournaments held there, owed and paid). A
+  venue's cut is made of up to three parts that add together: a flat amount per tournament, a % of entry fees collected
+  (fee x attendees) and a % of bracket fees collected (each event's rule bracket fee x entrants; events without a rule
+  count as $0). A series picks its venue in its settings; a tournament can be held at a different venue, use a custom
+  cut, or have no venue. The venue cut is a separate payable per tournament (it does not change the prize pool), marked
+  paid on the tournament page, the venue's page or the venue payments ledger. Like player payouts, a paid amount (and
+  the venue it was paid to) is never changed by a re-sync or a venue edit; a changed calculation shows a `≠` marker.
+  Databases from before venues existed get one venue per distinct series venue name and cut on upgrade.
 - Payouts are only calculated for events whose placements are **finalised** (complete on parry.gg, with a single 1st
   place). Others are flagged on the dashboard, series, tournament and event pages until fixed on parry.gg and re-synced.
 - **UI**: server-rendered, table-first, with every player, event, tournament, series and game linking to its page, plus

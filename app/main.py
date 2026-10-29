@@ -13,6 +13,7 @@ from fastapi.templating import Jinja2Templates
 
 from . import bank, codes, config, db, square, sync
 from .parry_client import GrpcParryClient
+from . import square_auth
 from .square_client import HttpSquareClient, SquareConfigError, environment as square_environment
 from .payouts import (Rule, RuleError, VenueCut, compute_payouts, parse_splits, pool_breakdown, splits_from_json,
                       splits_to_json, venue_breakdown)
@@ -456,11 +457,15 @@ def delete_period(period_id: int):
 
 # --- Square ----------------------------------------------------------------
 
+NO_SQUARE = "Square isn't set up: see the README to give the app read-only access"
+
+
 def square_setup() -> dict:
     """What the tournament page says about Square: whether a key is set, which environment, or what's wrong."""
-    if not config.square_token():
+    if not config.square_configured():
         return {"token": False, "env": None, "error": None}
-    try:
+    try:  # settings only: the token itself is fetched and checked with Square when a pull runs
+        square_auth.credentials()
         return {"token": True, "env": square_environment(), "error": None}
     except SquareConfigError as e:
         return {"token": True, "env": None, "error": str(e)}
@@ -471,8 +476,9 @@ def square_pull(tournament_id: str):
     to = f"/tournaments/{tournament_id}#square"
     with db.session() as conn:
         one(conn, "SELECT id FROM tournament WHERE id=?", tournament_id)
-    if not config.square_token():
-        return back(to, "No Square API key configured (SQUARE_API_KEY)")
+    setup = square_setup()
+    if not setup["env"]:
+        return back(to, setup["error"] or NO_SQUARE)
     try:
         client = HttpSquareClient()
         try:
@@ -494,7 +500,7 @@ def series_square_pull(series_id: int):
         one(conn, "SELECT id FROM series WHERE id=?", series_id)
     setup = square_setup()
     if not setup["env"]:
-        return back(f"/series/{series_id}", setup["error"] or "No Square API key configured (SQUARE_API_KEY)")
+        return back(f"/series/{series_id}", setup["error"] or NO_SQUARE)
     if not square.start_series_pull(series_id, lambda: HttpSquareClient()):
         return back(f"/series/{series_id}", "A Square pull is already running; try again when it finishes")
     return back(f"/series/{series_id}")
@@ -523,7 +529,7 @@ def import_square_payouts(since: str = Form(...)):
         return back("/bank", str(e))
     setup = square_setup()
     if not setup["env"]:
-        return back("/bank", setup["error"] or "No Square API key configured (SQUARE_API_KEY)")
+        return back("/bank", setup["error"] or NO_SQUARE)
     if not square.start_payouts_pull(lambda: HttpSquareClient(), day):
         return back("/bank", "A Square pull is already running; try again when it finishes")
     return back("/bank")

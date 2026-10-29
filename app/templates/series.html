@@ -9,7 +9,7 @@
 {% if current and current.venue_id %}<span>venue: {{ m.venue(current.venue_id, current.venue) }}</span>{% endif %}<span><b class="warn">{{ s.venue_owed|money }}</b> owed to venue</span>{% if s.square_taken %}<span><b>{{ s.square_taken|money }}</b> taken by card, <b>{{ s.square_fees|money }}</b> fees</span>{% endif %}<span><b class="ok">{{ s.venue_paid|money }}</b> paid to venue</span>
 <span>last synced {{ (s.last_synced or "never")[:16] }}</span></div>
 <div class="toolbar"><form class="inline" method="post" action="/series/{{ s.id }}/sync"><button>Import / sync now</button></form>
-<form class="inline" method="post" action="/series/{{ s.id }}/square/pull"><button class="sec" {{ "disabled" if not square_setup.env }} title="{{ square_setup.error or ('Square: ' ~ square_setup.env if square_setup.env else 'Set SQUARE_API_KEY and SQUARE_ENV') }}">Pull Square payments (all tournaments)</button></form>
+<form class="inline" method="post" action="/series/{{ s.id }}/square/pull"><button class="sec" {{ "disabled" if not square_setup.env }} title="{{ square_setup.error or ('Square: ' ~ square_setup.env if square_setup.env else 'Square is not set up (see README)') }}">Pull Square payments (all tournaments)</button></form>
 {% if square_setup.env and auto_pull_hours %}<span class="mut">auto-pulls the last 14 days every {{ auto_pull_hours|round(1)|string|replace(".0", "") }}h{{ " while tracked" if not s.tracked }}</span>{% endif %}
 <form class="inline" method="post" action="/series/{{ s.id }}/track"><button class="sec">{{ "Stop tracking" if s.tracked else "Track this series" }}</button></form></div>
 {% include "_issues.html" %}

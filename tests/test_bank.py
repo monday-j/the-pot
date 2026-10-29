@@ -3,7 +3,7 @@ from dataclasses import replace
 
 from app import bank, config, square
 from app.payouts import RuleError
-from tests.test_square import FakeSquare, TwoNightsClient, fnb, pay  # noqa: F401 (fixtures)
+from tests.test_square import FakeSquare, TwoNightsClient, fnb, oauth_env, pay  # noqa: F401 (fixtures)
 from tests.test_sync import conn  # noqa: F401
 from tests.test_web import client  # noqa: F401
 
@@ -165,7 +165,7 @@ def test_a_payment_pulled_after_its_payout_is_matched_when_stored(two_nights, pa
 def test_payouts_need_the_payouts_permission(monkeypatch):
     from tests.test_square import square_with
     c, _, _ = square_with(monkeypatch, [403])
-    with pytest.raises(RuntimeError, match="needs the PAYOUTS_READ permission"):
+    with pytest.raises(RuntimeError, match="read-only access doesn.t include PAYOUTS_READ: authorise again"):
         c.list_payouts("a", "b")
 
 
@@ -180,7 +180,7 @@ def test_payout_pages(client, monkeypatch, payout_square):  # noqa: F811
         if sync.status[1]["state"] != "running":
             break
         time.sleep(0.05)
-    monkeypatch.setenv("SQUARE_API_KEY", "tok")
+    oauth_env(monkeypatch)
     monkeypatch.setenv("SQUARE_ENV", "sandbox")
     payout_square.payments = [paid("A", 1000, 22, "2026-01-01T19:00:00Z"), paid("B", 1000, 22, "2026-01-01T19:05:00Z")]
     monkeypatch.setattr(main, "HttpSquareClient", lambda: payout_square)

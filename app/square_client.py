@@ -9,10 +9,10 @@ from urllib.parse import quote
 
 import httpx
 
-from . import config
+from . import config, square_auth
+from .square_auth import BASE_URLS, MissingSquareToken, SquareConfigError  # noqa: F401 (re-exported)
 
 SQUARE_VERSION = "2026-09-16"
-BASE_URLS = {"production": "https://connect.squareup.com", "sandbox": "https://connect.squareupsandbox.com"}
 
 # Square publishes no rate limits for the Payments API; it answers 429 when throttling and recommends exponential
 # backoff with jitter (developer docs, "Handling errors"). So: pace requests, and back off on 429s and blips.
@@ -70,14 +70,6 @@ class SquareClient(Protocol):
     def list_payout_entries(self, payout_id: str) -> list[SquarePayoutEntry]: ...
 
 
-class SquareConfigError(RuntimeError):
-    pass
-
-
-class MissingSquareToken(SquareConfigError):
-    pass
-
-
 class SquareRateLimited(RuntimeError):
     pass
 
@@ -86,7 +78,7 @@ def environment() -> str:
     """The Square environment to call. Never guessed: sandbox and production tokens only work against their own host."""
     env = config.square_env()
     if not env:
-        raise SquareConfigError("Set SQUARE_ENV to sandbox or production (it must match the SQUARE_API_KEY token)")
+        raise SquareConfigError("Set SQUARE_ENV to sandbox or production (it must match the Square app's credentials)")
     if env not in BASE_URLS:
         raise SquareConfigError(f"SQUARE_ENV must be sandbox or production, not {env!r}")
     return env
@@ -124,14 +116,14 @@ def parse_payout_entry(e: dict) -> SquarePayoutEntry:
 
 class HttpSquareClient:
     def __init__(self, transport: httpx.BaseTransport | None = None, sleep=time.sleep, clock=time.monotonic):
-        """transport, sleep and clock are for tests."""
-        token = config.square_token()
-        if not token:
-            raise MissingSquareToken("No Square API key configured (SQUARE_API_KEY)")
+        """transport, sleep and clock are for tests. Every request is a GET (square_auth.only_reads), made with a
+        read-only OAuth access token checked with Square first (square_auth.access_token)."""
+        square_auth.credentials()  # a clear error before anything is sent if Square isn't set up (or the old key is)
         self.env = environment()
-        self._http = httpx.Client(base_url=BASE_URLS[self.env], timeout=30,
-                                  headers={"Authorization": f"Bearer {token}", "Square-Version": SQUARE_VERSION},
-                                  transport=transport)
+        self._http = square_auth.http_client(self.env, transport)
+        token = square_auth.access_token(self._http, self.env)
+        self.scopes = token["scopes"]
+        self._http.headers["Authorization"] = f"Bearer {token['token']}"
         self._sleep, self._clock, self._last = sleep, clock, None
 
     def close(self):
@@ -186,8 +178,12 @@ class HttpSquareClient:
             if r.status_code != 200:  # Square's error detail, never the request headers
                 detail = "; ".join(e.get("detail", e.get("code", "")) for e in r.json().get("errors", [])) \
                     if r.headers.get("content-type", "").startswith("application/json") else r.reason_phrase
-                hint = {401: f" Check that SQUARE_API_KEY is a {self.env} access token, or set SQUARE_ENV to match it.",
-                        403: f" The SQUARE_API_KEY token needs the {permission} permission for this."}.get(r.status_code, "")
+                if r.status_code == 401:
+                    square_auth.forget()  # revoked or expired: the next client refreshes
+                hint = {401: f" Square rejected the access token (revoked or expired?); try again, and authorise again "
+                             f"if it keeps happening (see README). SQUARE_ENV must match the Square app's credentials.",
+                        403: f" The read-only access doesn't include {permission}: authorise again (see README)."
+                        }.get(r.status_code, "")
                 raise RuntimeError(f"Square ({self.env}) returned {r.status_code}: {detail.rstrip('.')}.{hint}")
             body = r.json()
             out += body.get(key, [])

@@ -18,9 +18,30 @@ def api_key() -> str | None:
 TIMEZONE = os.environ.get("TZ", "UTC")  # local time of the tournaments, for the Square time window
 
 
-def square_token() -> str | None:
-    """Read at call time, like api_key()."""
-    return os.environ.get("SQUARE_API_KEY", "").strip() or None
+# Square access is OAuth with read-only scopes only (see square_auth.py). These are read at call time, like api_key(),
+# and never stored in the database or logs.
+SQUARE_OAUTH_VARS = ("SQUARE_CLIENT_ID", "SQUARE_CLIENT_SECRET", "SQUARE_REFRESH_TOKEN")
+DEFAULT_SQUARE_REDIRECT_URL = "https://monday-j.github.io/the-pot/square-oauth.html"
+
+
+def square_oauth() -> dict:
+    """The OAuth settings that are set: client_id, client_secret, refresh_token (missing ones left out)."""
+    values = {name: os.environ.get(name, "").strip() for name in SQUARE_OAUTH_VARS}
+    return {name.removeprefix("SQUARE_").lower(): v for name, v in values.items() if v}
+
+
+def square_configured() -> bool:
+    """True once anything Square-related is set, so a half-done setup is reported instead of silently ignored."""
+    return bool(square_oauth()) or bool(os.environ.get("SQUARE_API_KEY", "").strip())
+
+
+def square_legacy_key_set() -> bool:
+    """The old full-access personal access token. It's refused while it's still in the environment."""
+    return bool(os.environ.get("SQUARE_API_KEY", "").strip())
+
+
+def square_redirect_url() -> str:
+    return os.environ.get("SQUARE_REDIRECT_URL", "").strip() or DEFAULT_SQUARE_REDIRECT_URL
 
 
 def square_auto_pull_hours() -> float:

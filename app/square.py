@@ -194,7 +194,7 @@ def start_payouts_pull(client_factory, since: str) -> bool:
 
 def auto_pull_once(client_factory, days: int = AUTO_PULL_DAYS):
     """Pull recent tournaments of every tracked series, one series after another, then recent payouts."""
-    if not config.square_token():
+    if not config.square_configured():
         return
     try:
         environment()

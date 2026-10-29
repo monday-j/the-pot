@@ -54,8 +54,8 @@ you've paid them and what you still owe. Local-only (no auth), SQLite, run as a 
   the Bank page (and the automatic pull) brings those payouts in as deposits, matched to the payments they covered,
   with Square's own breakdown: tournament payments, other Square takings (payments the app never pulled, e.g. outside
   tournament times) and refunds/fees. Each imported payout is "expected" until you tick **Seen in bank** against your
-  statement; failed payouts and ones not seen after 3 days are flagged. The token needs the `PAYOUTS_READ` permission
-  for this. You can also record a deposit by hand from the statement and tick the Square payments it covers (it
+  statement; failed payouts and ones not seen after 3 days are flagged. It uses the `PAYOUTS_READ` permission granted
+  during setup. You can also record a deposit by hand from the statement and tick the Square payments it covers (it
   suggests whole days just before the deposit that fit). Deposits that don't add up, and Square payments still not in the bank after 3 days,
   are flagged, and tournament pages show how much of their net is banked. Ignored Square payments count here too,
   since Square deposits them. Cash and other accounts aren't covered yet.
@@ -82,16 +82,49 @@ DATA_DIR=./data .venv/bin/uvicorn app.main:app --reload
 
 `.env` is git-ignored. The key is read at runtime only and is never stored in the database or logs.
 
-For Square, create an app in the [Square Developer dashboard](https://developer.squareup.com/apps) and put its access
-token (Credentials page; the app id isn't needed) in `SQUARE_API_KEY`, and set `SQUARE_ENV` to match it: `sandbox`
-for the Sandbox tab's token, `production` for the Production tab's (for real payments). `SQUARE_ENV` is required:
-each token is only accepted by its own Square environment (the other answers 401), so the app won't guess, and the
-tournament page shows which environment is in use. It only reads payments (`PAYMENTS_READ`). After changing `.env`,
-recreate the container (`docker compose up -d`); a restart keeps the old values. Set `TZ` to your local time zone
-(e.g. `Australia/Hobart`) so each tournament's day is right. If you have more than one Square location, put the venue's
-location id on its venue page. The only code that talks to Square is `app/square_client.py`. Square publishes no
-rate limits, so requests are spaced at least 250ms apart, and a rate-limited (`429`), server-error or dropped request
-is retried up to 5 times with exponential backoff and jitter (honouring `Retry-After`). Each retry is logged.
+### Square: read-only access
+
+The app only ever reads from Square, and it's set up so the server can't do anything else. Square's personal
+access tokens give "unrestricted" access to the whole account and can't be limited, so the app refuses them. Instead
+you authorise the app once, through Square OAuth, for **only** `PAYMENTS_READ` and `PAYOUTS_READ`. The server keeps
+the app's client id and secret and that grant's refresh token, and swaps them for short-lived access tokens held in
+memory only, renewed at least every 6 days. Square only issues tokens with the granted read scopes, so even with
+everything on the server, nobody can take a payment, refund money or change anything. Every new token's scopes are
+checked with Square before use, and any token that can do more than read is refused. The client can only send GET
+requests (apart from the two OAuth token calls). Nothing Square-related is stored in the database or logs.
+
+One-time setup (per environment, `sandbox` or `production`):
+
+1. In the [Square Developer Console](https://developer.squareup.com/apps), open the app, then **OAuth** for that
+   environment. Set the **Redirect URL** to `https://monday-j.github.io/the-pot/square-oauth.html` (a static page in
+   `docs/` that only shows the one-time code to copy; it loads and sends nothing). Copy the **Application ID** and
+   **Application secret**.
+2. In the server's `.env`, set `SQUARE_ENV`, `SQUARE_CLIENT_ID` and `SQUARE_CLIENT_SECRET`, then recreate the
+   container (`docker compose up -d`).
+3. Run `docker compose exec pot python -m app.square_oauth url`, open the link it prints, signed in as the account
+   owner, and check that Square lists only permission to read payments and payouts before approving. (For sandbox,
+   open the sandbox test account's dashboard from the Developer Console first.)
+4. Within 5 minutes, run the `python -m app.square_oauth exchange ...` command the redirect page shows (prefix it
+   with `docker compose exec pot`). It checks the grant is read-only and prints `SQUARE_REFRESH_TOKEN=...` once: add it
+   to `.env` and recreate the container again. `python -m app.square_oauth status` confirms the scopes.
+5. If `.env` still has the old `SQUARE_API_KEY`, remove it (the app refuses to talk to Square while it's set), and
+   **replace** that personal access token in the Developer Console (Credentials) so the copy that was on the server
+   stops working.
+
+Keep `.env` readable only by the deploy user. The authorisation code on the redirect page is single-use, expires in
+5 minutes, and is useless without the client secret. If the server is ever compromised, disconnect the app in the
+Square Dashboard (or replace the application secret): that cuts off its read access straight away. What can't be
+prevented is someone with server access *reading* payment data (amounts, card brand and last 4 digits), since the app
+needs that. The Square account login and Developer Console still have full access, so protect them with two-factor
+authentication.
+
+`SQUARE_ENV` must match the credentials (each environment only accepts its own), and the tournament page shows which
+is in use. After changing `.env`, recreate the container (`docker compose up -d`); a restart keeps the old values. Set
+`TZ` to your local time zone (e.g. `Australia/Hobart`) so each tournament's day is right. If you have more than one
+Square location, put the venue's location id on its venue page. The only code that talks to Square is
+`app/square_client.py` with `app/square_auth.py`. Square publishes no rate limits, so requests are spaced at least
+250ms apart, and a rate-limited (`429`), server-error or dropped request is retried up to 5 times with exponential
+backoff and jitter (honouring `Retry-After`). Each retry is logged.
 
 Then open http://127.0.0.1:8000. The database is `data/pot.db` (git-ignored). The app has no login, so keep it on
 localhost or a trusted network.

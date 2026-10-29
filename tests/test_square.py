@@ -9,6 +9,31 @@ from tests.test_sync import TwoNightsClient, conn  # noqa: F401 (fixture)
 from tests.test_web import client  # noqa: F401 (fixture)
 
 
+def oauth_env(monkeypatch, env=None):
+    """Read-only Square OAuth settings, as the server would have them (SQUARE_ENV too, when given)."""
+    monkeypatch.setenv("SQUARE_CLIENT_ID", "sq0idp-test")
+    monkeypatch.setenv("SQUARE_CLIENT_SECRET", "sq0csp-secret")
+    monkeypatch.setenv("SQUARE_REFRESH_TOKEN", "refresh-1")
+    if env:
+        monkeypatch.setenv("SQUARE_ENV", env)
+
+
+def no_square(monkeypatch):
+    for name in ("SQUARE_API_KEY", "SQUARE_CLIENT_ID", "SQUARE_CLIENT_SECRET", "SQUARE_REFRESH_TOKEN"):
+        monkeypatch.delenv(name, raising=False)
+
+
+def oauth_reply(request, scopes=("PAYMENTS_READ", "PAYOUTS_READ")):
+    """What Square's OAuth endpoints answer, or None for any other request."""
+    import httpx
+    if request.url.path == "/oauth2/token":
+        return httpx.Response(200, json={"access_token": "EAAA-access", "expires_at": "2099-01-01T00:00:00Z",
+                                         "refresh_token": "refresh-1", "merchant_id": "M1"})
+    if request.url.path == "/oauth2/token/status":
+        return httpx.Response(200, json={"scopes": list(scopes), "merchant_id": "M1"})
+    return None
+
+
 def pay(pid, amount, fp="", when="2026-01-01T09:00:00Z", status="COMPLETED"):
     return SquarePayment(pid, when, status, amount, "CARD", "VISA", fp[-4:].rjust(4, "0"), fp)
 
@@ -152,13 +177,13 @@ def test_square_pages(client, monkeypatch):  # noqa: F811
         if sync.status[1]["state"] != "running":
             break
         time.sleep(0.05)
-    monkeypatch.delenv("SQUARE_API_KEY", raising=False)
+    no_square(monkeypatch)
     page = client.get("/tournaments/t1").text
-    assert "Set <code>SQUARE_API_KEY</code>" in page and "$20.00</b> expected from 4 attendees" in page
-    assert "No Square API key" in client.post("/tournaments/t1/square/pull").text
+    assert "Give the app read-only Square access" in page and "$20.00</b> expected from 4 attendees" in page
+    assert "Square isn&#39;t set up" in client.post("/tournaments/t1/square/pull").text
 
     # a key without SQUARE_ENV (how production first broke) is refused up front, not sent to the wrong host
-    monkeypatch.setenv("SQUARE_API_KEY", "test-token")
+    oauth_env(monkeypatch)
     monkeypatch.delenv("SQUARE_ENV", raising=False)
     page = client.get("/tournaments/t1").text
     assert "Set SQUARE_ENV to sandbox or production" in page and "Pull payments from Square</button>" in page
@@ -187,10 +212,10 @@ def test_square_pages(client, monkeypatch):  # noqa: F811
 def test_http_client_pages_and_reports_errors(monkeypatch):
     import httpx
     from app.square_client import HttpSquareClient, MissingSquareToken, SquareConfigError
-    monkeypatch.delenv("SQUARE_API_KEY", raising=False)
+    no_square(monkeypatch)
     with pytest.raises(MissingSquareToken):
         HttpSquareClient()
-    monkeypatch.setenv("SQUARE_API_KEY", "tok")
+    oauth_env(monkeypatch)
     for env, problem in (("", "Set SQUARE_ENV"), ("prod", "not 'prod'")):
         monkeypatch.setenv("SQUARE_ENV", env)
         with pytest.raises(SquareConfigError, match=problem):
@@ -199,6 +224,8 @@ def test_http_client_pages_and_reports_errors(monkeypatch):
     seen = []
 
     def handler(request):
+        if (reply := oauth_reply(request)) is not None:
+            return reply
         seen.append(request)
         if request.url.params.get("location_id") == "BAD":
             return httpx.Response(401, json={"errors": [{"code": "UNAUTHORIZED", "detail": "bad token"}]})
@@ -210,10 +237,10 @@ def test_http_client_pages_and_reports_errors(monkeypatch):
     assert [p.id for p in c.list_payments("2026-01-01T00:00:00Z", "2026-01-02T06:00:00Z", "LOC")] == ["A", "B"]
     first = seen[0]
     assert first.url.host == "connect.squareupsandbox.com" and first.url.path == "/v2/payments"
-    assert first.headers["authorization"] == "Bearer tok" and first.headers["square-version"]
+    assert first.headers["authorization"] == "Bearer EAAA-access" and first.headers["square-version"]
     assert first.url.params["begin_time"] == "2026-01-01T00:00:00Z" and first.url.params["location_id"] == "LOC"
-    with pytest.raises(RuntimeError, match=r"Square \(sandbox\) returned 401: bad token\. Check that SQUARE_API_KEY is a "
-                                           r"sandbox access token"):
+    with pytest.raises(RuntimeError, match=r"Square \(sandbox\) returned 401: bad token\. Square rejected the access "
+                                           r"token"):
         c.list_payments("a", "b", "BAD")
 
     monkeypatch.setenv("SQUARE_ENV", "production")
@@ -239,11 +266,13 @@ def square_with(monkeypatch, responses):
     """An HttpSquareClient whose requests get `responses` in turn (a status code, an exception, or a JSON body)."""
     import httpx
     from app.square_client import HttpSquareClient
-    monkeypatch.setenv("SQUARE_API_KEY", "tok")
+    oauth_env(monkeypatch)
     monkeypatch.setenv("SQUARE_ENV", "sandbox")
     queue, clock, calls = list(responses), Clock(), []
 
     def handler(request):
+        if (reply := oauth_reply(request)) is not None:
+            return reply
         calls.append(clock.now)
         item = queue.pop(0)
         if isinstance(item, Exception):
@@ -371,7 +400,7 @@ class _session:
 
 def test_automatic_pull_covers_recent_tournaments_of_tracked_series(fnb, monkeypatch):
     monkeypatch.setattr(square.db, "session", lambda: _session(fnb))
-    monkeypatch.setenv("SQUARE_API_KEY", "tok")
+    oauth_env(monkeypatch)
     monkeypatch.delenv("SQUARE_ENV", raising=False)
     client = FakeSquare()
     square.auto_pull_once(lambda: client)
@@ -406,9 +435,9 @@ def test_series_square_pull_button(client, monkeypatch):  # noqa: F811
         if sync.status[1]["state"] != "running":
             break
         time.sleep(0.05)
-    monkeypatch.delenv("SQUARE_API_KEY", raising=False)
-    assert "No Square API key" in client.post("/series/1/square/pull").text
-    monkeypatch.setenv("SQUARE_API_KEY", "tok")
+    no_square(monkeypatch)
+    assert "Square isn&#39;t set up" in client.post("/series/1/square/pull").text
+    oauth_env(monkeypatch)
     monkeypatch.setenv("SQUARE_ENV", "sandbox")
     monkeypatch.setenv("SQUARE_AUTO_PULL_HOURS", "6")
     fake = FakeSquare([pay("P1", 500, when="2026-01-01T09:00:00Z")])
@@ -453,7 +482,7 @@ def test_fee_pages(client, monkeypatch):  # noqa: F811
         if sync.status[1]["state"] != "running":
             break
         time.sleep(0.05)
-    monkeypatch.setenv("SQUARE_API_KEY", "tok")
+    oauth_env(monkeypatch)
     monkeypatch.setenv("SQUARE_ENV", "sandbox")
     from dataclasses import replace
     fake = FakeSquare([replace(pay("P1", 1000, "fp-a"), fee_cents=22), pay("P2", 1000, "fp-b")])
@@ -489,7 +518,7 @@ def test_missing_payments_show_in_needs_attention(client, monkeypatch):  # noqa:
             break
         time.sleep(0.05)
     assert "with missing payments" not in client.get("/series/FNB").text.split("Tournaments")[0]
-    monkeypatch.setenv("SQUARE_API_KEY", "tok")
+    oauth_env(monkeypatch)
     monkeypatch.setenv("SQUARE_ENV", "sandbox")
     fake = FakeSquare([pay("P1", 500, "fp-a"), pay("P2", 500, "fp-b")])
     monkeypatch.setattr(main, "HttpSquareClient", lambda: fake)

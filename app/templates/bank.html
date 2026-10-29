@@ -9,7 +9,7 @@
 <span><b class="warn">{{ waiting|sum(attribute="net")|money }}</b> net from Square not in the bank yet</span></div>
 <form method="post" action="/bank/square/pull" class="toolbar">
 <label>Square payouts sent since<input type="date" name="since" value="{{ import_since }}" required></label>
-<button class="sec" {{ "disabled" if not square_setup.env }} title="{{ square_setup.error or ('Square: ' ~ square_setup.env if square_setup.env else 'Set SQUARE_API_KEY and SQUARE_ENV') }}">Import payouts from Square</button>
+<button class="sec" {{ "disabled" if not square_setup.env }} title="{{ square_setup.error or ('Square: ' ~ square_setup.env if square_setup.env else 'Square is not set up (see README)') }}">Import payouts from Square</button>
 <span class="mut">Imported payouts come with the payments they covered; tick each one off when it shows on your statement.</span></form>
 <form method="post" action="/bank" class="toolbar">
 <label>Deposited on<input type="date" name="deposited_on" value="{{ today }}" required></label>

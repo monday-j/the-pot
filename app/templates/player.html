@@ -16,4 +16,14 @@
 {{ m.ptd(h.placement) }}<td class="r" data-v="{{ h.amount_cents or 0 }}">{% if h.payout_id %}{{ h.amount_cents|money }}{{ m.discrepancy(h.amount_cents, h.computed_cents) }}{% else %}<span class="mut">·</span>{% endif %}</td>
 <td>{{ m.status(h.status, h.paid_at) }}</td><td>{{ m.paybtn(h.payout_id, h.status, here) }}</td></tr>
 {% else %}<tr><td colspan="9" class="mut">No events yet.</td></tr>{% endfor %}</tbody></table></div>
+<h2>Also known as <span class="n">· {{ aliases|length }}</span></h2>
+<table><thead><tr><th>Tag</th><th>parry.gg user id</th><th></th></tr></thead><tbody>
+{% for a in aliases %}<tr><td>{{ a.gamer_tag }}</td><td class="mut">{{ a.id }}</td>
+<td><form class="inline" method="post" action="/players/{{ a.id|urlq }}/unmerge"><button class="sec">Unmerge</button></form></td></tr>
+{% else %}<tr><td colspan="3" class="mut">No other players merged into {{ p.gamer_tag }}.</td></tr>{% endfor %}</tbody></table>
+{% if others %}<form method="post" action="/players/{{ p.id|urlq }}/merge" class="toolbar">
+<label>Merge another player into {{ p.gamer_tag }}<select name="other" required><option value="">(pick a player)</option>
+{% for o in others %}<option value="{{ o.id }}">{{ o.gamer_tag }}</option>{% endfor %}</select></label><button class="sec">Merge</button></form>{% endif %}
+<p class="help">Merging shows the other player's history and payouts here, including on future syncs. Unmerge puts them back.
+Players who entered the same event can't be merged.</p>
 {% endblock %}

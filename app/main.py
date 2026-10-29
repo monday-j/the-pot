@@ -390,12 +390,12 @@ def tournament_page(request: Request, tournament_id: str):
             events.append({"e": e, "pool": info[1] if info else None, "has_rule": info is not None,
                            "issue": flagged.get(e["id"])})
         attendees = {r["id"]: {"id": r["id"], "tag": r["gamer_tag"], "entries": [], "owed": 0, "paid": 0}
-                     for r in conn.execute("""SELECT p.id, p.gamer_tag FROM tournament_entry te
+                     for r in conn.execute("""SELECT p.id, p.gamer_tag FROM tournament_entry_c te
                                               JOIN player p ON p.id=te.player_id WHERE te.tournament_id=?
                                               ORDER BY p.gamer_tag COLLATE NOCASE""", (tournament_id,))}
         for r in conn.execute("""SELECT ee.player_id, e.id AS eid, e.name AS ename, e.game_name, ee.placement,
                                         po.id AS payout_id, po.amount_cents, po.status
-                                 FROM event_entry ee JOIN event e ON e.id=ee.event_id
+                                 FROM event_entry_c ee JOIN event e ON e.id=ee.event_id
                                  LEFT JOIN payout po ON po.event_id=e.id AND po.player_id=ee.player_id
                                  WHERE e.tournament_id=? ORDER BY e.name""", (tournament_id,)):
             a = attendees.get(r["player_id"])
@@ -450,7 +450,7 @@ def event_page(request: Request, event_id: str):
         issue = sync.event_issues(conn, event_id=event_id)
         rows = conn.execute("""SELECT p.id AS player_id, p.gamer_tag, ee.placement, po.id AS payout_id,
                                       po.amount_cents, po.computed_cents, po.status, po.paid_at
-                               FROM event_entry ee JOIN player p ON p.id=ee.player_id
+                               FROM event_entry_c ee JOIN player p ON p.id=ee.player_id
                                LEFT JOIN payout po ON po.event_id=ee.event_id AND po.player_id=ee.player_id
                                WHERE ee.event_id=?
                                ORDER BY ee.placement IS NULL, ee.placement, p.gamer_tag COLLATE NOCASE""",
@@ -489,7 +489,7 @@ def game_page(request: Request, name: str):
                                   LEFT JOIN series s ON s.id=t.series_id
                                   WHERE e.game_name=? AND t.excluded=0 ORDER BY t.start_date DESC, e.name""",
                               (name,)):
-            winners = conn.execute("""SELECT p.id, p.gamer_tag FROM event_entry ee JOIN player p ON p.id=ee.player_id
+            winners = conn.execute("""SELECT p.id, p.gamer_tag FROM event_entry_c ee JOIN player p ON p.id=ee.player_id
                                       WHERE ee.event_id=? AND ee.placement=1 ORDER BY p.gamer_tag COLLATE NOCASE""",
                                    (e["id"],)).fetchall()
             info = sync.event_pool(conn, e["id"])
@@ -500,7 +500,7 @@ def game_page(request: Request, name: str):
                              (name, name)).fetchall()
         players = conn.execute("""SELECT p.id, p.gamer_tag, COUNT(*) AS events, MIN(ee.placement) AS best,
                                          SUM(ee.placement=1) AS wins
-                                  FROM event_entry ee JOIN player p ON p.id=ee.player_id
+                                  FROM event_entry_c ee JOIN player p ON p.id=ee.player_id
                                   JOIN event e ON e.id=ee.event_id WHERE e.game_name=?
                                   GROUP BY p.id ORDER BY wins DESC, events DESC, p.gamer_tag COLLATE NOCASE""",
                                (name,)).fetchall()
@@ -538,31 +538,45 @@ def payouts_page(request: Request, status: str = "", series: int | None = None, 
 @app.get("/players")
 def players_page(request: Request, q: str = ""):
     with db.session() as conn:
-        players = conn.execute("""SELECT p.id, p.gamer_tag,
-                 (SELECT COUNT(*) FROM tournament_entry te WHERE te.player_id=p.id) AS tournaments,
-                 (SELECT COUNT(*) FROM event_entry ee WHERE ee.player_id=p.id) AS events,
-                 (SELECT MIN(placement) FROM event_entry WHERE player_id=p.id) AS best,
-                 (SELECT MAX(t.start_date) FROM tournament_entry te JOIN tournament t ON t.id=te.tournament_id
-                   WHERE te.player_id=p.id) AS last_played,
+        # merged players are listed once, under the player they were merged into
+        players = conn.execute("""SELECT p.id, p.gamer_tag, COALESCE(te.n, 0) AS tournaments, te.last_played,
+                 COALESCE(ee.n, 0) AS events, ee.best,
+                 (SELECT GROUP_CONCAT(a.gamer_tag, ', ') FROM player a WHERE a.merged_into=p.id) AS aliases,
                  COALESCE((SELECT SUM(amount_cents) FROM payout WHERE player_id=p.id AND status='owed'),0) AS owed,
                  COALESCE((SELECT SUM(amount_cents) FROM payout WHERE player_id=p.id AND status='paid'),0) AS paid
-                 FROM player p WHERE p.gamer_tag LIKE ? ORDER BY p.gamer_tag COLLATE NOCASE""",
-                               (f"%{q}%",)).fetchall()
-    return render(request, "players.html", players=players, q=q)
+                 FROM player p
+                 LEFT JOIN (SELECT x.player_id, COUNT(*) AS n, MAX(t.start_date) AS last_played FROM tournament_entry_c x
+                            JOIN tournament t ON t.id=x.tournament_id GROUP BY x.player_id) te ON te.player_id=p.id
+                 LEFT JOIN (SELECT player_id, COUNT(*) AS n, MIN(placement) AS best FROM event_entry_c
+                            GROUP BY player_id) ee ON ee.player_id=p.id
+                 WHERE p.merged_into IS NULL AND (p.gamer_tag LIKE ? OR EXISTS (
+                   SELECT 1 FROM player a WHERE a.merged_into=p.id AND a.gamer_tag LIKE ?))
+                 ORDER BY p.gamer_tag COLLATE NOCASE""", (f"%{q}%", f"%{q}%")).fetchall()
+        groups = {}
+        for p in conn.execute("SELECT id, gamer_tag FROM player WHERE merged_into IS NULL ORDER BY gamer_tag COLLATE NOCASE"):
+            groups.setdefault(sync.tag_key(p["gamer_tag"]), []).append(p)
+    duplicates = [g for key, g in groups.items() if key and len(g) > 1]
+    return render(request, "players.html", players=players, q=q, duplicates=duplicates)
 
 
 @app.get("/players/{player_id}")
 def player_page(request: Request, player_id: str):
     with db.session() as conn:
         p = one(conn, "SELECT * FROM player WHERE id=?", player_id)
+        if p["merged_into"]:
+            return RedirectResponse(f"/players/{quote(p['merged_into'], safe='')}", status_code=307)
+        aliases = conn.execute("SELECT * FROM player WHERE merged_into=? ORDER BY gamer_tag COLLATE NOCASE",
+                               (player_id,)).fetchall()
+        others = conn.execute("""SELECT id, gamer_tag FROM player WHERE merged_into IS NULL AND id != ?
+                                 ORDER BY gamer_tag COLLATE NOCASE""", (player_id,)).fetchall()
         history = conn.execute("""SELECT t.id AS tid, t.name AS tname, t.start_date, t.series_id, s.name AS sname, s.code AS scode,
                                          e.id AS eid, e.name AS ename, e.game_name, ee.placement,
                                          po.id AS payout_id, po.amount_cents, po.computed_cents, po.status, po.paid_at
-                                  FROM event_entry ee JOIN event e ON e.id=ee.event_id
+                                  FROM event_entry_c ee JOIN event e ON e.id=ee.event_id
                                   JOIN tournament t ON t.id=e.tournament_id LEFT JOIN series s ON s.id=t.series_id
                                   LEFT JOIN payout po ON po.event_id=e.id AND po.player_id=ee.player_id
                                   WHERE ee.player_id=? ORDER BY t.start_date DESC, e.name""", (player_id,)).fetchall()
-        tournaments = conn.execute("SELECT COUNT(*) FROM tournament_entry WHERE player_id=?", (player_id,)).fetchone()[0]
+        tournaments = conn.execute("SELECT COUNT(*) FROM tournament_entry_c WHERE player_id=?", (player_id,)).fetchone()[0]
     owed = sum(h["amount_cents"] for h in history if h["status"] == "owed")
     paid = sum(h["amount_cents"] for h in history if h["status"] == "paid")
     best = min((h["placement"] for h in history if h["placement"]), default=None)
@@ -578,7 +592,28 @@ def player_page(request: Request, player_id: str):
         if h["status"]:
             row[h["status"]] += h["amount_cents"]
     return render(request, "player.html", p=p, history=history, owed=owed, paid=paid, tournaments=tournaments,
-                  best=best, totals=sorted(totals.values(), key=lambda r: (r["sname"] or "", r["game"])))
+                  aliases=aliases, others=others, best=best, totals=sorted(totals.values(), key=lambda r: (r["sname"] or "", r["game"])))
+
+
+@app.post("/players/{player_id}/merge")
+def merge_player(player_id: str, other: str = Form(...)):
+    """Merge `other` into this player (e.g. the same person imported under a second parry.gg account)."""
+    try:
+        with db.session() as conn:
+            sync.merge_players(conn, player_id, other)
+    except RuleError as e:
+        return back(f"/players/{quote(player_id, safe='')}", str(e))
+    return back(f"/players/{quote(player_id, safe='')}")
+
+
+@app.post("/players/{player_id}/unmerge")
+def unmerge_player(player_id: str):
+    try:
+        with db.session() as conn:
+            keep_id = sync.unmerge_player(conn, player_id)
+    except RuleError as e:
+        return back("/players", str(e))
+    return back(f"/players/{quote(keep_id, safe='')}")
 
 
 @app.post("/payouts/{payout_id}/paid")

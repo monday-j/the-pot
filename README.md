@@ -21,6 +21,10 @@ you've paid them and what you still owe. Local-only (no auth), SQLite, run as a 
   Money is integer cents; splits are exact to the cent.
 - **Payments**: each payout starts as *owed*; mark it paid per payout or settle everything owed to a player.
   Re-syncing never changes an amount you've already marked paid: a changed result shows a `≠` marker instead.
+- **Merging players**: someone imported under two parry.gg accounts (e.g. `Alice` and `alice`) can be merged from
+  either player's page; the Players page suggests tags that differ only in case or punctuation. The merged player's
+  history and payouts show under the main one, including on future syncs, and Unmerge puts them back. Players who
+  entered the same event can't be merged.
 - **Venue**: each series can have a venue name and a cut made of up to three parts that add together: a flat amount per
   tournament, a % of entry fees collected (fee x attendees) and a % of bracket fees collected (each event's rule bracket
   fee x entrants; events without a rule count as $0). It is a separate payable per tournament (it does not change the

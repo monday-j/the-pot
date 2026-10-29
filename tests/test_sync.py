@@ -262,3 +262,69 @@ def test_empty_event_list_from_parry_gg_prunes_nothing(conn):
     client.tournaments["t1"].events = []
     sync.sync_series(conn, client, 1)
     assert conn.execute("SELECT COUNT(*) FROM event").fetchone()[0] == 1
+
+
+class TwoNightsClient(FakeClient):
+    """t1 as usual, plus a second night where Alice played under another account ("alice " / u5)."""
+    by_slug = {"fnb": ["t1", "t3"]}
+
+    def __init__(self):
+        super().__init__()
+        self.tournaments["t3"] = TournamentInfo("t3", "Friday Night Brawl #91", "friday-night-brawl-91-abc",
+                                                "2026-01-08", 2, [EventInfo("e3", "Ultimate Singles", "Smash Ultimate", 2, True)])
+        self.night2 = [PlacementInfo("u5", "alice ", 1), PlacementInfo("u2", "Bob", 2)]
+
+    def get_attendees(self, tid):
+        if tid == "t3":
+            return [Attendee(p.user_id, p.gamer_tag, ["e3"]) for p in self.night2]
+        return super().get_attendees(tid)
+
+    def get_event_placements(self, eid):
+        return self.night2 if eid == "e3" else self.placements
+
+
+def payouts(conn, event_id):
+    return {r["player_id"]: (r["amount_cents"], r["status"])
+            for r in conn.execute("SELECT * FROM payout WHERE event_id=?", (event_id,))}
+
+
+def test_merge_players_combines_history_survives_resync_and_unmerges(conn):
+    conn.execute("UPDATE series SET custom_slug='fnb' WHERE id=1")
+    client = TwoNightsClient()
+    sync.sync_series(conn, client, 1)
+    assert payouts(conn, "e3") == {"u5": (900, "owed"), "u2": (540, "owed")}  # 1000 + 80% of 500*2, 50/30 split
+    conn.execute("UPDATE payout SET status='paid' WHERE player_id='u5'")
+
+    sync.merge_players(conn, "u1", "u5")
+    assert payouts(conn, "e3") == {"u1": (900, "paid"), "u2": (540, "owed")}
+    assert payouts(conn, "e1")["u1"] == (1300, "owed")  # the first night is untouched
+    assert conn.execute("SELECT COUNT(*) FROM tournament_entry_c WHERE player_id='u1'").fetchone()[0] == 2
+
+    sync.sync_series(conn, client, 1)  # a re-sync imports u5 again but keeps reporting it as u1
+    assert payouts(conn, "e3") == {"u1": (900, "paid"), "u2": (540, "owed")}
+    assert conn.execute("SELECT merged_into FROM player WHERE id='u5'").fetchone()[0] == "u1"
+
+    assert sync.unmerge_player(conn, "u5") == "u1"
+    assert payouts(conn, "e3") == {"u5": (900, "paid"), "u2": (540, "owed")}
+    assert payouts(conn, "e1")["u1"] == (1300, "owed")
+
+
+def test_merge_refuses_players_from_the_same_event(conn):
+    conn.execute("UPDATE series SET custom_slug='fnb' WHERE id=1")
+    sync.sync_series(conn, TwoNightsClient(), 1)
+    with pytest.raises(sync.RuleError, match="both entered"):
+        sync.merge_players(conn, "u1", "u2")
+    with pytest.raises(sync.RuleError, match="themselves"):
+        sync.merge_players(conn, "u1", "u1")
+    sync.merge_players(conn, "u1", "u5")
+    with pytest.raises(sync.RuleError, match="both entered"):  # u5's history counts as u1's now
+        sync.merge_players(conn, "u2", "u1")
+    with pytest.raises(sync.RuleError, match="already merged"):
+        sync.merge_players(conn, "u3", "u5")
+    with pytest.raises(sync.RuleError, match="isn't merged"):
+        sync.unmerge_player(conn, "u1")
+
+
+def test_tag_key_ignores_case_and_punctuation():
+    assert sync.tag_key("alice ") == sync.tag_key("Alice") == sync.tag_key("A.lice")
+    assert sync.tag_key("Alice") != sync.tag_key("Alicia")

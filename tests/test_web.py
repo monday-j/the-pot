@@ -4,7 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import config, db, main, sync
-from tests.test_sync import FakeClient
+from tests.test_sync import FakeClient, TwoNightsClient
 
 
 @pytest.fixture
@@ -242,3 +242,28 @@ def test_init_backfills_series_codes(tmp_path, monkeypatch):
     got = [r["code"] for r in c.execute("SELECT code FROM series ORDER BY id")]
     assert got[0] == "FNB" and got[2] == "WWA" and len(set(got)) == 3 and all(len(x) == 3 for x in got)
     c.close()
+
+
+def test_merge_players_pages(client, monkeypatch):
+    monkeypatch.setattr(main, "GrpcParryClient", TwoNightsClient)
+    client.post("/series", data={"name": "FNB", "custom_slug": "fnb"})
+    client.post("/series/1/sync")
+    for _ in range(50):
+        if sync.status[1]["state"] != "running":
+            break
+        time.sleep(0.05)
+    page = client.get("/players").text
+    assert "Possible duplicates" in page and "Merge alice  into Alice" in page
+
+    assert "both entered" in client.post("/players/u1/merge", data={"other": "u2"}).text
+    page = client.post("/players/u1/merge", data={"other": "u5"}).text
+    assert "Also known as" in page and "Unmerge" in page and "Friday Night Brawl #91" in page
+    r = client.get("/players/u5", follow_redirects=False)
+    assert r.status_code == 307 and r.headers["location"] == "/players/u1"
+    page = client.get("/players").text
+    assert 'href="/players/u5"' not in page and "aka alice" in page and "Possible duplicates" not in page
+    assert 'href="/players/u1"' in client.get("/tournaments/t3").text
+
+    page = client.post("/players/u5/unmerge").text
+    assert "No other players merged" in page
+    assert client.get("/players/u5").status_code == 200

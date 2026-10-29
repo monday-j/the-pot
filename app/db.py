@@ -57,7 +57,8 @@ CREATE TABLE IF NOT EXISTS rule (
 );
 CREATE TABLE IF NOT EXISTS player (
     id TEXT PRIMARY KEY,
-    gamer_tag TEXT NOT NULL
+    gamer_tag TEXT NOT NULL,
+    merged_into TEXT REFERENCES player(id) ON DELETE SET NULL
 );
 CREATE TABLE IF NOT EXISTS tournament_entry (
     tournament_id TEXT NOT NULL REFERENCES tournament(id) ON DELETE CASCADE,
@@ -95,6 +96,17 @@ CREATE INDEX IF NOT EXISTS idx_event_tournament ON event(tournament_id);
 CREATE INDEX IF NOT EXISTS idx_tournament_series ON tournament(series_id);
 """
 
+# Entries keep the parry.gg user id they were imported under; these views report each one under the player it was
+# merged into, so a merge survives re-syncs and can be undone. Created after ADDED_COLUMNS (they need merged_into).
+VIEWS = """
+CREATE VIEW IF NOT EXISTS event_entry_c AS
+    SELECT ee.event_id, COALESCE(p.merged_into, ee.player_id) AS player_id, MIN(ee.placement) AS placement
+    FROM event_entry ee JOIN player p ON p.id=ee.player_id GROUP BY 1, 2;
+CREATE VIEW IF NOT EXISTS tournament_entry_c AS
+    SELECT DISTINCT te.tournament_id, COALESCE(p.merged_into, te.player_id) AS player_id
+    FROM tournament_entry te JOIN player p ON p.id=te.player_id;
+"""
+
 
 def connect() -> sqlite3.Connection:
     config.DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -127,6 +139,9 @@ ADDED_COLUMNS = {
         "venue_flat_cents": "INTEGER NOT NULL DEFAULT 0",
         "venue_entry_pct": "TEXT NOT NULL DEFAULT '0'",
         "venue_bracket_pct": "TEXT NOT NULL DEFAULT '0'",
+    },
+    "player": {
+        "merged_into": "TEXT REFERENCES player(id) ON DELETE SET NULL",
     },
     "event": {
         "slug": "TEXT NOT NULL DEFAULT ''",
@@ -162,4 +177,5 @@ def init():
     with session() as conn:
         conn.executescript(SCHEMA)
         _add_columns(conn)
+        conn.executescript(VIEWS)
         _backfill_series_codes(conn)

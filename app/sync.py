@@ -1,11 +1,12 @@
 """Import tournaments from parry.gg and (re)compute payouts from the stored rules."""
+import re
 import threading
 from datetime import datetime, timezone
 from decimal import Decimal
 
 from . import db
 from .parry_client import ParryClient, matches_pattern
-from .payouts import Rule, VenueCut, compute_payouts, pool_cents, splits_from_json, venue_breakdown
+from .payouts import Rule, RuleError, VenueCut, compute_payouts, pool_cents, splits_from_json, venue_breakdown
 
 
 def now() -> str:
@@ -40,17 +41,17 @@ def event_pool(conn, event_id: str):
     rule = resolve_rule(conn, ev["series_id"], event_id, ev["game_name"])
     if rule is None:
         return None
-    entrants = conn.execute("SELECT COUNT(*) FROM event_entry WHERE event_id=?", (event_id,)).fetchone()[0] \
+    entrants = conn.execute("SELECT COUNT(*) FROM event_entry_c WHERE event_id=?", (event_id,)).fetchone()[0] \
         or ev["entrant_count"]
-    attendees = conn.execute("SELECT COUNT(*) FROM tournament_entry WHERE tournament_id=?",
+    attendees = conn.execute("SELECT COUNT(*) FROM tournament_entry_c WHERE tournament_id=?",
                              (ev["tournament_id"],)).fetchone()[0] or ev["num_attendees"]
     fee = ev["t_fee"] if ev["t_fee"] is not None else (ev["s_fee"] or 0)
     return rule, pool_cents(rule, entrants, attendees, fee), entrants, attendees, fee
 
 
 _ISSUES_SQL = """SELECT e.id, e.name, e.completed, t.id AS tournament_id, t.name AS tournament_name, t.series_id,
-                        (SELECT COUNT(*) FROM event_entry WHERE event_id=e.id AND placement IS NOT NULL) AS placed,
-                        (SELECT COUNT(*) FROM event_entry WHERE event_id=e.id AND placement=1) AS firsts
+                        (SELECT COUNT(*) FROM event_entry_c WHERE event_id=e.id AND placement IS NOT NULL) AS placed,
+                        (SELECT COUNT(*) FROM event_entry_c WHERE event_id=e.id AND placement=1) AS firsts
                  FROM event e JOIN tournament t ON t.id=e.tournament_id WHERE t.excluded=0"""
 
 
@@ -93,7 +94,7 @@ def recompute_event(conn, event_id: str):
     if info:
         rule, pool, *_ = info
         placements = {r["player_id"]: r["placement"] for r in conn.execute(
-            "SELECT player_id, placement FROM event_entry WHERE event_id=? AND placement IS NOT NULL", (event_id,))}
+            "SELECT player_id, placement FROM event_entry_c WHERE event_id=? AND placement IS NOT NULL", (event_id,))}
         computed, _ = compute_payouts(pool, rule.splits, placements)
         placed = placements
     else:
@@ -135,7 +136,7 @@ def venue_inputs(conn, tournament_id: str):
         cut = VenueCut(t["venue_flat_cents"], Decimal(t["venue_entry_pct"]), Decimal(t["venue_bracket_pct"]))
     else:
         cut = VenueCut(t["s_flat"], Decimal(t["s_entry"]), Decimal(t["s_bracket"]))
-    attendees = conn.execute("SELECT COUNT(*) FROM tournament_entry WHERE tournament_id=?",
+    attendees = conn.execute("SELECT COUNT(*) FROM tournament_entry_c WHERE tournament_id=?",
                              (tournament_id,)).fetchone()[0] or t["num_attendees"]
     fee = t["entry_fee_cents"] if t["entry_fee_cents"] is not None else (t["s_fee"] or 0)
     bracket, unruled = 0, []
@@ -144,7 +145,7 @@ def venue_inputs(conn, tournament_id: str):
         if rule is None:
             unruled.append(e["name"])
             continue
-        entrants = conn.execute("SELECT COUNT(*) FROM event_entry WHERE event_id=?", (e["id"],)).fetchone()[0] \
+        entrants = conn.execute("SELECT COUNT(*) FROM event_entry_c WHERE event_id=?", (e["id"],)).fetchone()[0] \
             or e["entrant_count"]
         bracket += rule.bracket_fee * entrants
     return {"venue_name": t["s_name"], "cut": cut, "attendees": attendees, "entry_fee": fee,
@@ -182,6 +183,69 @@ def recompute_series(conn, series_id: int):
         recompute_event(conn, r["id"])
     for t in conn.execute("SELECT id FROM tournament WHERE series_id=?", (series_id,)).fetchall():
         recompute_venue(conn, t["id"])
+
+
+# --- merging players -------------------------------------------------------
+
+def tag_key(tag: str) -> str:
+    """Gamer tags that differ only in case, spacing or punctuation share a key (likely the same person)."""
+    return re.sub(r"[^a-z0-9]+", "", tag.lower())
+
+
+def _recompute_tournaments_of(conn, player_ids):
+    marks = ",".join("?" * len(player_ids))
+    tids = [r[0] for r in conn.execute(
+        f"SELECT DISTINCT tournament_id FROM tournament_entry WHERE player_id IN ({marks})", player_ids)]
+    for tid in tids:
+        for e in conn.execute("SELECT id FROM event WHERE tournament_id=?", (tid,)).fetchall():
+            recompute_event(conn, e["id"])
+        recompute_venue(conn, tid)
+
+
+def merge_players(conn, keep_id: str, alias_id: str):
+    """Report everything imported under `alias_id` as `keep_id`, now and on future syncs.
+
+    The alias's own rows are left in place (see the *_c views), so unmerge_player can undo this exactly.
+    """
+    keep = conn.execute("SELECT * FROM player WHERE id=?", (keep_id,)).fetchone()
+    alias = conn.execute("SELECT * FROM player WHERE id=?", (alias_id,)).fetchone()
+    if keep is None or alias is None:
+        raise RuleError("Unknown player")
+    if keep["merged_into"]:
+        keep = conn.execute("SELECT * FROM player WHERE id=?", (keep["merged_into"],)).fetchone()
+    if keep["id"] == alias["id"]:
+        raise RuleError("Can't merge a player into themselves")
+    if alias["merged_into"]:
+        raise RuleError(f"{alias['gamer_tag']} is already merged into another player; unmerge them first")
+    keep_group, alias_group = (
+        [pid] + [r[0] for r in conn.execute("SELECT id FROM player WHERE merged_into=?", (pid,))]
+        for pid in (keep["id"], alias["id"]))
+    a_marks, k_marks = ",".join("?" * len(alias_group)), ",".join("?" * len(keep_group))
+    shared = conn.execute(f"""SELECT e.name, t.name AS tname FROM event_entry a JOIN event_entry b ON b.event_id=a.event_id
+                              JOIN event e ON e.id=a.event_id JOIN tournament t ON t.id=e.tournament_id
+                              WHERE a.player_id IN ({a_marks}) AND b.player_id IN ({k_marks})""",
+                          (*alias_group, *keep_group)).fetchone()
+    if shared:
+        raise RuleError(f"{keep['gamer_tag']} and {alias['gamer_tag']} both entered {shared['tname']}: "
+                        f"{shared['name']}, so they can't be the same player")
+    conn.execute("UPDATE player SET merged_into=? WHERE id=? OR merged_into=?", (keep["id"], alias["id"], alias["id"]))
+    conn.execute("UPDATE payout SET player_id=? WHERE player_id=?", (keep["id"], alias["id"]))
+    _recompute_tournaments_of(conn, keep_group + alias_group)
+
+
+def unmerge_player(conn, alias_id: str):
+    """Undo a merge: payouts for events the alias entered (under its own parry.gg id) go back to it."""
+    alias = conn.execute("SELECT * FROM player WHERE id=?", (alias_id,)).fetchone()
+    if alias is None or not alias["merged_into"]:
+        raise RuleError("That player isn't merged")
+    keep_id = alias["merged_into"]
+    conn.execute("""UPDATE payout SET player_id=? WHERE player_id=?
+                    AND event_id IN (SELECT event_id FROM event_entry WHERE player_id=?)
+                    AND event_id NOT IN (SELECT event_id FROM event_entry WHERE player_id=?)""",
+                 (alias_id, keep_id, alias_id, keep_id))
+    conn.execute("UPDATE player SET merged_into=NULL WHERE id=?", (alias_id,))
+    _recompute_tournaments_of(conn, [keep_id, alias_id])
+    return keep_id
 
 
 # --- import ----------------------------------------------------------------

@@ -2,8 +2,12 @@
 <h1>Players</h1>
 <form method="get" class="toolbar"><label>Search tag<input name="q" value="{{ q }}"></label><button>Search</button>
 <label>Filter this list<input data-filter-for="players" placeholder="type to filter"></label></form>
+{% if duplicates %}<div class="strip"><b>Possible duplicates</b> (tags that differ only in case or punctuation):<ul>
+{% for g in duplicates %}<li>{% for p in g %}{{ m.player(p.id, p.gamer_tag) }}{{ ", " if not loop.last }}{% endfor %}
+{% for p in g[1:] %}<form class="inline" method="post" action="/players/{{ g[0].id|urlq }}/merge"><input type="hidden" name="other" value="{{ p.id }}">
+<button class="sec">Merge {{ p.gamer_tag }} into {{ g[0].gamer_tag }}</button></form>{% endfor %}</li>{% endfor %}</ul></div>{% endif %}
 <div class="summary"><span><b>{{ players|length }}</b> players</span><span><b class="warn">{{ players|sum(attribute="owed")|money }}</b> owed</span><span><b class="ok">{{ players|sum(attribute="paid")|money }}</b> paid</span></div>
 <table class="sortable" id="players"><thead><tr><th>Player</th><th class="r">Tournaments</th><th class="r">Events</th><th class="r">Best</th><th>Last played</th><th class="r">Owed</th><th class="r">Paid</th></tr></thead><tbody>
-{% for p in players %}<tr><td>{{ m.player(p.id, p.gamer_tag) }}</td><td class="r">{{ p.tournaments }}</td><td class="r">{{ p.events }}</td>{{ m.ptd(p.best) }}<td>{{ p.last_played or "" }}</td>{{ m.mtd(p.owed, "warn") }}{{ m.mtd(p.paid, "ok") }}</tr>
+{% for p in players %}<tr><td>{{ m.player(p.id, p.gamer_tag) }}{% if p.aliases %} <span class="mut" title="Merged players">aka {{ p.aliases }}</span>{% endif %}</td><td class="r">{{ p.tournaments }}</td><td class="r">{{ p.events }}</td>{{ m.ptd(p.best) }}<td>{{ p.last_played or "" }}</td>{{ m.mtd(p.owed, "warn") }}{{ m.mtd(p.paid, "ok") }}</tr>
 {% else %}<tr><td colspan="7" class="mut">No players yet.</td></tr>{% endfor %}</tbody></table>
 {% endblock %}

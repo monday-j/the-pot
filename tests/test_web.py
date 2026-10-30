@@ -391,3 +391,39 @@ def test_style_guide_and_fonts_are_served(client):  # noqa: F811
     assert "Style guide" in page and 'class="tile owing"' in page and "onsubmit" not in page
     font = client.get("/static/fonts/barlow-condensed-800.woff2")
     assert font.status_code == 200 and font.content[:4] == b"wOF2"
+
+
+def step(page: str, n: int) -> str:
+    """One numbered step of the tournament page, up to the next."""
+    return page.split(f'<span class="no">{n}</span>')[1].split('<h2 class="step')[0]
+
+
+def test_tournament_page_is_takings_payouts_then_summary(seeded):
+    add_venue(seeded)
+    set_terms(seeded)
+    page = seeded.get("/tournaments/t1").text
+    assert page.index('id="takings"') < page.index('id="payouts"') < page.index('id="summary"') < page.index('id="setup"')
+    assert '<span class="chip locked">not tracked</span>' in step(page, 1)  # nothing pulled from Square
+    payouts = step(page, 2)
+    assert '<span class="chip owing">$50.00 to pay</span>' in payouts and payouts.count("Mark paid") == 5
+    assert "1st in " in payouts and "venue cut" in payouts
+    # $0 taken, less $26 of prizes and the venue's $24
+    assert "<b>-$50.00</b>" in step(page, 3)
+
+    pid = int(payouts.split('action="/payouts/')[1].split("/")[0])
+    r = seeded.post(f"/payouts/{pid}/paid", data={"next": "/tournaments/t1#payouts", "paid_on": "2026-01-02"},
+                    follow_redirects=False)
+    assert r.headers["location"] == "/tournaments/t1#payouts"
+    assert '<span class="chip paid">paid 2026-01-02</span>' in step(seeded.get("/tournaments/t1").text, 2)
+
+
+def test_tournament_setup_tracks_takings_and_excludes(seeded):
+    seeded.post("/tournaments/t1/takings", data={"takings": "on"})
+    page = seeded.get("/tournaments/t1").text
+    assert '<option value="on" selected>' in page and "not tracked" not in step(page, 1)
+    assert "Unknown takings setting" in seeded.post("/tournaments/t1/takings", data={"takings": "x"}).text
+    r = seeded.post("/tournaments/t1/exclude", data={"next": "/tournaments/t1"}, follow_redirects=False)
+    assert r.headers["location"] == "/tournaments/t1"
+    page = seeded.get("/tournaments/t1").text
+    assert '<span class="chip locked">excluded</span>' in page and ">Restore</button>" in page
+    assert seeded.post("/tournaments/t1/exclude", follow_redirects=False).headers["location"] == "/series/1"

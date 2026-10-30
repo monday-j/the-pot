@@ -2,17 +2,17 @@
 
 from fastapi import APIRouter, Form, HTTPException, Request
 
-from .. import bank, db, ledger, square, sync
+from .. import bank, db, ledger, runsheet, square, sync
 from ..payouts import RuleError, venue_breakdown
 from ..square_client import SquareConfigError
-from ..web import (EVENT_SUMS, NO_SQUARE, back, dollars_to_cents, one, parse_venue, pick_venue, render, square_client,
-                   square_setup, venue_options)
+from ..web import (EVENT_SUMS, NO_SQUARE, back, dollars_to_cents, one, parse_venue, pick_venue, render, safe_next,
+                   square_client, square_setup, venue_options)
 
 router = APIRouter()
 
 
 @router.post("/tournaments/{tournament_id}/exclude")
-def toggle_exclude(tournament_id: str):
+def toggle_exclude(tournament_id: str, next: str = Form("")):
     with db.session() as conn:
         t = one(conn, "SELECT * FROM tournament WHERE id=?", tournament_id)
         if t["locked_by"]:
@@ -21,7 +21,23 @@ def toggle_exclude(tournament_id: str):
         for e in conn.execute("SELECT id FROM event WHERE tournament_id=?", (tournament_id,)).fetchall():
             sync.recompute_event(conn, e["id"])  # excluded tournaments drop their unpaid payouts
         sync.recompute_venue(conn, tournament_id)
-    return back(f"/series/{t['series_id']}" if t["series_id"] else "/")
+    return back(safe_next(next, f"/series/{t['series_id']}" if t["series_id"] else "/"))
+
+
+@router.post("/tournaments/{tournament_id}/takings")
+def tournament_takings(tournament_id: str, takings: str = Form("auto")):
+    """Whether the app tracks what each entrant owes for this tournament: auto (when Square payments were pulled for
+    it), on or off."""
+    try:
+        if takings not in ("auto", "on", "off"):
+            raise RuleError("Unknown takings setting")
+        with db.session() as conn:
+            one(conn, "SELECT id FROM tournament WHERE id=?", tournament_id)
+            square.check_unlocked(conn, tournament_id)
+            conn.execute("UPDATE tournament SET takings=? WHERE id=?", (takings, tournament_id))
+    except RuleError as e:
+        return back(f"/tournaments/{tournament_id}#setup", str(e))
+    return back(f"/tournaments/{tournament_id}#setup")
 
 
 @router.post("/tournaments/{tournament_id}/entry-fee")
@@ -197,9 +213,20 @@ def tournament_page(request: Request, tournament_id: str):
                      "payment": conn.execute("SELECT * FROM venue_payment WHERE tournament_id=?",
                                              (tournament_id,)).fetchone()}
         venues = venue_options(conn)
-        recon = square.reconcile(conn, tournament_id)
+        b = ledger.books(conn)
+        recon = square.reconcile(conn, tournament_id, books=b)
+        card = next((c for cards in runsheet.stages(conn, t["series_id"], books=b).values() for c in cards
+                     if c["id"] == tournament_id), None)
+        payouts = conn.execute("""SELECT po.*, e.name AS ename, p.gamer_tag FROM payout po
+                                  JOIN event e ON e.id=po.event_id JOIN player p ON p.id=po.player_id
+                                  WHERE e.tournament_id=? ORDER BY e.name, po.placement""", (tournament_id,)).fetchall()
         players = conn.execute("""SELECT id, gamer_tag FROM player WHERE merged_into IS NULL
                                   ORDER BY gamer_tag COLLATE NOCASE""").fetchall()
+    prizes = sum(p["amount_cents"] for p in payouts)
+    venue_cents = venue["payment"]["amount_cents"] if venue and venue["payment"] else 0
     return render(request, "tournament.html", t=t, events=events, attendees=list(attendees.values()), venue=venue,
                   venues=venues, recon=recon, square_setup=square_setup(), meanings=square.MEANINGS, players=players,
-                  states=ledger.STATES, settle_methods={**ledger.RECEIPT_METHODS, **ledger.CHARGE_METHODS})
+                  states=ledger.STATES, settle_methods={**ledger.RECEIPT_METHODS, **ledger.CHARGE_METHODS},
+                  card=card, stages=runsheet.STAGES, payouts=payouts, prizes=prizes, venue_cents=venue_cents,
+                  to_pay=sum(p["amount_cents"] for p in payouts if p["status"] == "owed")
+                  + (venue_cents if venue and venue["payment"] and venue["payment"]["status"] == "owed" else 0))

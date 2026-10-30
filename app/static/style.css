@@ -142,6 +142,7 @@ button.sec,.button.sec{background:transparent;color:var(--fg);border-color:var(-
 button.sec:hover{background:var(--raised);filter:none}
 button.danger,.button.danger{background:transparent;color:var(--owing);border-color:var(--owing)}
 button.danger:hover{background:var(--owing-soft);filter:none}
+button:disabled,button:disabled:hover{background:transparent;color:var(--dim);border-color:var(--line);filter:none;cursor:not-allowed}
 td input,td select{min-width:3.5rem}
 td select{max-width:16rem}
 form.inline{display:inline;margin:0}

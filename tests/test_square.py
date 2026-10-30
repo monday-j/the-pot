@@ -232,7 +232,7 @@ def test_square_pages(client, monkeypatch):  # noqa: F811
     monkeypatch.delenv("SQUARE_ENV", raising=False)
     page = client.get("/tournaments/t1").text
     assert "Set SQUARE_ENV to sandbox or production" in page and "Pull payments from Square</button>" in page
-    assert '<button class="sec" disabled>Pull payments' in page
+    assert '<button disabled>Pull payments' in page
     page = client.post("/tournaments/t1/square/pull").text
     assert "Set SQUARE_ENV to sandbox or production" in page and "SquareConfigError" not in page
     monkeypatch.setenv("SQUARE_ENV", "prod")

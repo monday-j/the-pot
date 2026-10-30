@@ -196,8 +196,10 @@ scripts/test-deploy.sh load                                # load the newest sna
 scripts/test-deploy.sh down                                # stop (reset also deletes the test data)
 ```
 
-`load` prints player and venue owed/paid totals before and after the upgrade and fails if they differ, so a schema
-migration that would reprice anything shows up before it reaches production. `snapshot` uses SQLite's online backup
+`load` prints player and venue owed/paid totals, Square takings, deposits and the last reconciled bank balance before
+and after the upgrade and fails if they differ, so a schema migration that would reprice anything shows up before it
+reaches production. Once the ledger exists (`app/ledger.py`), it also checks the books balance and lists each tournament
+whose amount owing changed, and why. `snapshot` uses SQLite's online backup
 into the production container's `/tmp`, so the live `/data` is never written to. Set `POT_CONTAINER` if the container
 isn't found automatically, and `POT_DOCKER="sudo docker"` if the server needs it. Snapshots hold real payment records:
 they stay in `data/snapshots/` (git- and docker-ignored, readable only by you). Anything you do in the test copy, like marking payouts paid,

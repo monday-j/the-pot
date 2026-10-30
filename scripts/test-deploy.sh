@@ -17,13 +17,14 @@ compose() { docker compose -f compose.test.yaml "$@"; }
 URL=http://127.0.0.1:8001
 SNAPSHOTS=data/snapshots
 
-# Money totals and counts that an upgrade must not change. Missing tables (older schemas) count as 0.
+# Money totals and counts that an upgrade must not change. Missing tables (older schemas) and no rows count as 0.
 TOTALS='
 import sqlite3, sys
 c = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True)
 def q(sql):
     try:
-        return c.execute(sql).fetchone()[0] or 0
+        row = c.execute(sql).fetchone()
+        return (row[0] if row else 0) or 0
     except sqlite3.OperationalError:
         return 0
 for label, sql in [
@@ -35,6 +36,10 @@ for label, sql in [
     ("players paid (c)", "SELECT SUM(amount_cents) FROM payout WHERE status=\"paid\""),
     ("venues owed (c)", "SELECT SUM(amount_cents) FROM venue_payment WHERE status=\"owed\""),
     ("venues paid (c)", "SELECT SUM(amount_cents) FROM venue_payment WHERE status=\"paid\""),
+    ("square counted (c)", "SELECT SUM(amount_cents) FROM square_payment WHERE ignored=0"),
+    ("deposits (c)", "SELECT SUM(amount_cents) FROM bank_deposit WHERE payout_status!=\"FAILED\""),
+    ("reconciliations", "SELECT COUNT(*) FROM reconciliation"),
+    ("bank balance (c)", "SELECT balance_cents FROM reconciliation ORDER BY reconciled_on DESC, id DESC LIMIT 1"),
 ]:
     print(f"{label:<18} {q(sql)}")
 '
@@ -91,6 +96,12 @@ cmd_load() {
           printf "%-25s %12s %12s%s\n", label, v, $2, bad ? "   <-- changed" : ""; if (bad) diff = 1 }
         END { if (diff) { print "Totals changed during the upgrade: check before pushing."; exit 1 }
               print "Totals unchanged by the upgrade." }'
+    if [[ -f app/ledger.py ]]; then  # the books must balance, and what moved between tournaments is listed to check
+        compose exec -T pot-test python -m app.ledger check
+        if grep -q 'def report' app/ledger.py; then
+            compose exec -T pot-test python -m app.ledger report
+        fi
+    fi
 }
 
 case "${1:-}" in

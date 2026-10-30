@@ -234,8 +234,8 @@ def test_payouts_need_the_payouts_permission(monkeypatch):
 
 def test_payout_pages(client, monkeypatch, payout_square):  # noqa: F811
     import time
-    from app import main, sync
-    monkeypatch.setattr(main, "GrpcParryClient", TwoNightsClient)
+    from app import main, sync, web
+    monkeypatch.setattr(web, "GrpcParryClient", TwoNightsClient)
     monkeypatch.setattr(config, "TIMEZONE", "UTC")
     client.post("/series", data={"name": "FNB", "custom_slug": "fnb"})
     client.post("/series/1/sync")
@@ -246,7 +246,7 @@ def test_payout_pages(client, monkeypatch, payout_square):  # noqa: F811
     oauth_env(monkeypatch)
     monkeypatch.setenv("SQUARE_ENV", "sandbox")
     payout_square.payments = [paid("A", 1000, 22, "2026-01-01T19:00:00Z"), paid("B", 1000, 22, "2026-01-01T19:05:00Z")]
-    monkeypatch.setattr(main, "HttpSquareClient", lambda: payout_square)
+    monkeypatch.setattr(web, "HttpSquareClient", lambda: payout_square)
     client.post("/tournaments/t1/square/pull")
     assert "not a date" in client.post("/bank/square/pull", data={"since": "x"}).text
     client.post("/bank/square/pull", data={"since": "2026-01-01"})
@@ -266,8 +266,8 @@ def test_payout_pages(client, monkeypatch, payout_square):  # noqa: F811
 
 def test_locked_things_refuse_changes_on_the_pages(client, monkeypatch):  # noqa: F811
     import time
-    from app import main
-    monkeypatch.setattr(main, "GrpcParryClient", TwoNightsClient)
+    from app import main, web
+    monkeypatch.setattr(web, "GrpcParryClient", TwoNightsClient)
     client.post("/series", data={"name": "FNB", "custom_slug": "fnb"})
     with main.db.session() as conn:
         conn.execute("""INSERT INTO rule (series_id, period_id, game_name, fixed_pool_cents, splits)

@@ -3,7 +3,7 @@ import time
 import pytest
 from fastapi.testclient import TestClient
 
-from app import config, db, main, sync
+from app import config, db, main, sync, web
 from tests.conftest import PASSWORD
 from tests.test_sync import FakeClient, TwoNightsClient
 
@@ -13,7 +13,7 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "DATA_DIR", tmp_path)
     monkeypatch.setattr(config, "DB_PATH", tmp_path / "pot.db")
     monkeypatch.setenv("PARRY_API_KEY", "test-key")
-    monkeypatch.setattr(main, "GrpcParryClient", FakeClient)
+    monkeypatch.setattr(web, "GrpcParryClient", FakeClient)
     sync.status.clear()
     with TestClient(main.app, follow_redirects=True) as c:
         assert c.post("/login", data={"password": PASSWORD}).status_code == 200
@@ -274,7 +274,7 @@ def test_init_backfills_series_codes(tmp_path, monkeypatch):
 
 
 def test_merge_players_pages(client, monkeypatch):
-    monkeypatch.setattr(main, "GrpcParryClient", TwoNightsClient)
+    monkeypatch.setattr(web, "GrpcParryClient", TwoNightsClient)
     client.post("/series", data={"name": "FNB", "custom_slug": "fnb"})
     client.post("/series/1/sync")
     for _ in range(50):

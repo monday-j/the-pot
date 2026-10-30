@@ -2,7 +2,7 @@ import time
 
 import pytest
 
-from app import config, main, square, sync
+from app import config, square, sync, web
 from app.payouts import RuleError
 from app.square_client import SquarePayment, parse_payment
 from tests.test_sync import TwoNightsClient, conn  # noqa: F401 (fixture)
@@ -210,7 +210,7 @@ def test_payments_follow_a_player_merge(fnb):
 
 
 def test_square_pages(client, monkeypatch):  # noqa: F811
-    monkeypatch.setattr(main, "GrpcParryClient", TwoNightsClient)
+    monkeypatch.setattr(web, "GrpcParryClient", TwoNightsClient)
     client.post("/series", data={"name": "FNB", "custom_slug": "fnb"})
     client.post("/periods/1", data={"entry_fee": "5"})
     client.post("/series/1/sync")
@@ -239,7 +239,7 @@ def test_square_pages(client, monkeypatch):  # noqa: F811
     monkeypatch.setenv("SQUARE_ENV", "sandbox")
     assert "Square: sandbox" in client.get("/tournaments/t1").text
     fake = FakeSquare([pay("P1", 500, "fp-a"), pay("P2", 500, "fp-b")])
-    monkeypatch.setattr(main, "HttpSquareClient", lambda: fake)
+    monkeypatch.setattr(web, "HttpSquareClient", lambda: fake)
     page = client.post("/tournaments/t1/square/pull").text
     assert "$10.00</b> taken in 2 payments" in page and "2</b> to link to a player" in page
     page = client.post("/square-payments/P1/link", data={"player_id": "u1"}).text
@@ -473,7 +473,7 @@ def test_auto_pull_hours_setting(monkeypatch):
 
 
 def test_series_square_pull_button(client, monkeypatch):  # noqa: F811
-    monkeypatch.setattr(main, "GrpcParryClient", TwoNightsClient)
+    monkeypatch.setattr(web, "GrpcParryClient", TwoNightsClient)
     client.post("/series", data={"name": "FNB", "custom_slug": "fnb"})
     client.post("/series/1/sync")
     for _ in range(50):
@@ -486,7 +486,7 @@ def test_series_square_pull_button(client, monkeypatch):  # noqa: F811
     monkeypatch.setenv("SQUARE_ENV", "sandbox")
     monkeypatch.setenv("SQUARE_AUTO_PULL_HOURS", "6")
     fake = FakeSquare([pay("P1", 500, when="2026-01-01T09:00:00Z")])
-    monkeypatch.setattr(main, "HttpSquareClient", lambda: fake)
+    monkeypatch.setattr(web, "HttpSquareClient", lambda: fake)
     assert "auto-pulls the last 14 days every 6h" in client.get("/series/FNB").text
     client.post("/series/1/square/pull")
     for _ in range(100):
@@ -520,7 +520,7 @@ def test_fees_are_filled_in_on_a_later_pull_and_reported_net(fnb):
 
 
 def test_fee_pages(client, monkeypatch):  # noqa: F811
-    monkeypatch.setattr(main, "GrpcParryClient", TwoNightsClient)
+    monkeypatch.setattr(web, "GrpcParryClient", TwoNightsClient)
     client.post("/series", data={"name": "FNB", "custom_slug": "fnb"})
     client.post("/series/1/sync")
     for _ in range(50):
@@ -531,7 +531,7 @@ def test_fee_pages(client, monkeypatch):  # noqa: F811
     monkeypatch.setenv("SQUARE_ENV", "sandbox")
     from dataclasses import replace
     fake = FakeSquare([replace(pay("P1", 1000, "fp-a"), fee_cents=22), pay("P2", 1000, "fp-b")])
-    monkeypatch.setattr(main, "HttpSquareClient", lambda: fake)
+    monkeypatch.setattr(web, "HttpSquareClient", lambda: fake)
     page = client.post("/tournaments/t1/square/pull").text
     assert "$0.22</b> card fees" in page and "(1 pending)" in page and "$19.78</b> net" in page
     assert ">pending<" in page and "$0.22" in page
@@ -554,7 +554,7 @@ def test_payment_issues_flag_tournaments_with_missing_payments(fnb):
 
 
 def test_missing_payments_show_in_needs_attention(client, monkeypatch):  # noqa: F811
-    monkeypatch.setattr(main, "GrpcParryClient", TwoNightsClient)
+    monkeypatch.setattr(web, "GrpcParryClient", TwoNightsClient)
     client.post("/series", data={"name": "FNB", "custom_slug": "fnb"})
     client.post("/periods/1", data={"entry_fee": "5"})
     client.post("/series/1/sync")
@@ -566,7 +566,7 @@ def test_missing_payments_show_in_needs_attention(client, monkeypatch):  # noqa:
     oauth_env(monkeypatch)
     monkeypatch.setenv("SQUARE_ENV", "sandbox")
     fake = FakeSquare([pay("P1", 500, "fp-a"), pay("P2", 500, "fp-b")])
-    monkeypatch.setattr(main, "HttpSquareClient", lambda: fake)
+    monkeypatch.setattr(web, "HttpSquareClient", lambda: fake)
     client.post("/tournaments/t1/square/pull")
     client.post("/square-payments/P1/link", data={"player_id": "u1"})
     for url in ("/", "/series/FNB"):
@@ -577,7 +577,7 @@ def test_missing_payments_show_in_needs_attention(client, monkeypatch):  # noqa:
 
 
 def test_a_payment_linked_to_someone_not_entered_shows_on_the_page(client, monkeypatch):  # noqa: F811
-    monkeypatch.setattr(main, "GrpcParryClient", TwoNightsClient)
+    monkeypatch.setattr(web, "GrpcParryClient", TwoNightsClient)
     client.post("/series", data={"name": "FNB", "custom_slug": "fnb"})
     client.post("/series/1/sync")
     for _ in range(50):
@@ -586,7 +586,7 @@ def test_a_payment_linked_to_someone_not_entered_shows_on_the_page(client, monke
         time.sleep(0.05)
     oauth_env(monkeypatch, "sandbox")
     fake = FakeSquare([pay("P1", 1000, "fp-cat"), pay("P9", 500, "fp-cat", "2026-01-08T09:00:00Z")])
-    monkeypatch.setattr(main, "HttpSquareClient", lambda: fake)
+    monkeypatch.setattr(web, "HttpSquareClient", lambda: fake)
     client.post("/tournaments/t3/square/pull")
     client.post("/tournaments/t1/square/pull")
     client.post("/square-payments/P1/link", data={"player_id": "u3"})
@@ -614,7 +614,7 @@ def test_fully_refunded_payments_are_shown_but_not_counted(fnb):
 
 def test_refunded_payments_on_the_page(client, monkeypatch):  # noqa: F811
     from dataclasses import replace
-    monkeypatch.setattr(main, "GrpcParryClient", TwoNightsClient)
+    monkeypatch.setattr(web, "GrpcParryClient", TwoNightsClient)
     client.post("/series", data={"name": "FNB", "custom_slug": "fnb"})
     client.post("/series/1/sync")
     for _ in range(50):
@@ -623,7 +623,7 @@ def test_refunded_payments_on_the_page(client, monkeypatch):  # noqa: F811
         time.sleep(0.05)
     oauth_env(monkeypatch, "sandbox")
     fake = FakeSquare([replace(pay("R1", 0, "fp-x"), fee_cents=24), replace(pay("OK", 1000, "fp-y"), fee_cents=16)])
-    monkeypatch.setattr(main, "HttpSquareClient", lambda: fake)
+    monkeypatch.setattr(web, "HttpSquareClient", lambda: fake)
     page = client.post("/tournaments/t1/square/pull").text
     assert "Square payments <span class=\"n\">· 1</span>" in page and "taken in 1 payments" in page
     assert "refunded, nothing to link" in page and "(incl. $0.24 on 1 refunded payment)" in page
@@ -642,7 +642,7 @@ def test_unlinked_payments_that_cover_everyone_ask_for_linking_not_payment(fnb):
 
 
 def test_payments_to_link_show_softly_in_needs_attention(client, monkeypatch):  # noqa: F811
-    monkeypatch.setattr(main, "GrpcParryClient", TwoNightsClient)
+    monkeypatch.setattr(web, "GrpcParryClient", TwoNightsClient)
     client.post("/series", data={"name": "FNB", "custom_slug": "fnb"})
     client.post("/periods/1", data={"entry_fee": "5"})
     client.post("/series/1/sync")
@@ -652,7 +652,7 @@ def test_payments_to_link_show_softly_in_needs_attention(client, monkeypatch):  
         time.sleep(0.05)
     oauth_env(monkeypatch, "sandbox")
     fake = FakeSquare([pay(f"P{i}", 500, f"fp-{i}") for i in range(4)])
-    monkeypatch.setattr(main, "HttpSquareClient", lambda: fake)
+    monkeypatch.setattr(web, "HttpSquareClient", lambda: fake)
     page = client.post("/tournaments/t1/square/pull").text
     assert "0</b> players unpaid, short or over" in page and "4</b> players not matched to a payment yet (4 payments to link)" in page
     assert "not matched yet" in page
@@ -691,7 +691,7 @@ def test_a_waived_entrant_leaves_no_shortfall_while_payments_wait_to_be_linked(f
 
 
 def test_sorting_out_an_entrant_on_the_page(client, monkeypatch):  # noqa: F811
-    monkeypatch.setattr(main, "GrpcParryClient", TwoNightsClient)
+    monkeypatch.setattr(web, "GrpcParryClient", TwoNightsClient)
     client.post("/series", data={"name": "FNB", "custom_slug": "fnb"})
     client.post("/periods/1", data={"entry_fee": "5"})
     client.post("/series/1/sync")
@@ -700,7 +700,7 @@ def test_sorting_out_an_entrant_on_the_page(client, monkeypatch):  # noqa: F811
             break
         time.sleep(0.05)
     oauth_env(monkeypatch, "sandbox")
-    monkeypatch.setattr(main, "HttpSquareClient", lambda: FakeSquare([pay("P1", 1500, "fp-a")]))
+    monkeypatch.setattr(web, "HttpSquareClient", lambda: FakeSquare([pay("P1", 1500, "fp-a")]))
     client.post("/tournaments/t1/square/pull")
     client.post("/square-payments/P1/link", data={"player_id": "u1"})
     assert 'action="/tournaments/t1/entrants/u2/resolve"' in client.get("/tournaments/t1").text
@@ -772,7 +772,7 @@ def test_a_shortfall_the_organiser_covers_stops_being_flagged_until_it_grows(fnb
 
 
 def test_covering_a_shortfall_on_the_page(client, monkeypatch):  # noqa: F811
-    monkeypatch.setattr(main, "GrpcParryClient", TwoNightsClient)
+    monkeypatch.setattr(web, "GrpcParryClient", TwoNightsClient)
     client.post("/series", data={"name": "FNB", "custom_slug": "fnb"})
     client.post("/periods/1", data={"entry_fee": "5"})
     client.post("/series/1/sync")
@@ -781,7 +781,7 @@ def test_covering_a_shortfall_on_the_page(client, monkeypatch):  # noqa: F811
             break
         time.sleep(0.05)
     oauth_env(monkeypatch, "sandbox")
-    monkeypatch.setattr(main, "HttpSquareClient", lambda: FakeSquare([pay("P1", 1500, "fp-a")]))
+    monkeypatch.setattr(web, "HttpSquareClient", lambda: FakeSquare([pay("P1", 1500, "fp-a")]))
     client.post("/tournaments/t1/square/pull")
     client.post("/square-payments/P1/no-player")
     page = client.get("/tournaments/t1").text

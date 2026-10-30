@@ -32,7 +32,8 @@ CHARGE_METHODS = {"waived": "waived", "written_off": "written off", "other_playe
 CREDIT_METHODS = {"income": "kept as income", "refunded": "refunded"}
 RECEIPT_METHODS = {"bank": "bank transfer", "cash": "cash"}
 STATES = {"paid": "paid", "late": "paid late", "credit": "paid by credit", "settled": "sorted out",
-          "written_off": "written off", "owing": "owing", "unmatched": "not matched yet", "covered": "paid, unnamed"}
+          "written_off": "written off", "owing": "owing", "unmatched": "not matched yet", "covered": "paid, unnamed",
+          "not_entered": "didn't enter"}
 
 
 def tracked(conn) -> list:
@@ -74,9 +75,14 @@ def freeze(conn, tournament_id: str):
                           square.expected_by_player(conn, tournament_id).items()])
 
 
-def _new_charge(tid, pid, date):
+def charge_row(tid, pid, date):
     return {"tournament_id": tid, "player_id": pid, "date": date, "due": 0, "covers": 0, "night": 0, "late": 0,
             "credit": 0, "receipt": 0, "settled": {}, "balance": 0, "state": None}
+
+
+def tournament_row(written_off: int = 0) -> dict:
+    return {"due": 0, "to_link": 0, "to_link_cents": 0, "anonymous": 0, "open": 0, "gap": 0, "written_off": written_off,
+            "unmatched": 0}
 
 
 def books(conn) -> dict:
@@ -99,7 +105,7 @@ def books(conn) -> dict:
 
     def charge(tid, pid):
         if (tid, pid) not in out_charges:
-            out_charges[(tid, pid)] = _new_charge(tid, pid, dates.get(tid, ("", tid))[0])
+            out_charges[(tid, pid)] = charge_row(tid, pid, dates.get(tid, ("", tid))[0])
         return out_charges[(tid, pid)]
 
     for (tid, pid), due in charges(conn).items():
@@ -233,10 +239,7 @@ def books(conn) -> dict:
             credit_left[pid] = sum(cr[0] for cr in credits)
 
     # the tournaments as a whole: payments with no player
-    tournaments = {}
-    for t in tracked(conn):
-        tournaments[t["id"]] = {"due": 0, "to_link": 0, "to_link_cents": 0, "anonymous": 0, "open": 0, "gap": 0,
-                                "written_off": gap_written_off.get(t["id"], 0), "unmatched": 0}
+    tournaments = {t["id"]: tournament_row(gap_written_off.get(t["id"], 0)) for t in tracked(conn)}
     for p in payments:
         if not p["pid"] and p["tournament_id"] in tournaments:
             t = tournaments[p["tournament_id"]]
@@ -253,7 +256,7 @@ def books(conn) -> dict:
             t["open"] += max(c["balance"], 0)
     for tid, t in tournaments.items():
         if t["to_link"] or t["anonymous"]:
-            t["gap"] = max(t["open"] - t["anonymous"] - t["written_off"], 0)
+            t["gap"] = max(t["open"] - t["anonymous"] - t["to_link_cents"] - t["written_off"], 0)
     for c in out_charges.values():
         t = tournaments.get(c["tournament_id"], {})
         if c["balance"] > 0:
@@ -289,11 +292,16 @@ def owing(b: dict) -> dict:
 
 # --- decisions made by hand --------------------------------------------------
 
-def _player(conn, player_id: str) -> str:
+def canonical(conn, player_id: str) -> str:
+    """The player someone is reported under (after merges); the id itself if unknown."""
     row = conn.execute("SELECT COALESCE(merged_into, id) FROM player WHERE id=?", (player_id,)).fetchone()
-    if row is None:
+    return row[0] if row else player_id
+
+
+def _player(conn, player_id: str) -> str:
+    if not conn.execute("SELECT 1 FROM player WHERE id=?", (player_id,)).fetchone():
         raise RuleError("Unknown player")
-    return row[0]
+    return canonical(conn, player_id)
 
 
 def _amount(cents: int):

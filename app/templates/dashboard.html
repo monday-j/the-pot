@@ -6,7 +6,7 @@
 {% set players_owed = owing|rejectattr("venue")|list|length %}<div class="summary"><span><b class="warn">{{ owed|money }}</b> owed to {{ players_owed }} player{{ "s" if players_owed != 1 }}</span>
 <span><b class="ok">{{ paid|money }}</b> paid</span>
 <span><b class="warn">{{ venue_owed|money }}</b> <a href="/venue?status=owed">owed to venues</a></span><span><b class="ok">{{ venue_paid|money }}</b> paid to venues</span><span><b class="{{ 'bad' if issues }}">{{ issues|length }}</b> flagged event{{ "s" if issues|length != 1 }}</span>
-{% set missing = payment_issues|selectattr("kind", "eq", "missing")|list %}<span><b class="{{ 'warn' if missing }}">{{ missing|length }}</b> tournament{{ "s" if missing|length != 1 }} with missing payments</span></div>
+{% set gaps = payment_issues|selectattr("kind", "eq", "gap")|list %}<span><b class="{{ 'warn' if gaps }}">{{ gaps|length }}</b> tournament{{ "s" if gaps|length != 1 }} with money missing</span></div>
 {% include "_issues.html" %}
 <h2>Who is owed <span class="n">· {{ owing|length }}</span></h2>
 <table class="sortable"><thead><tr><th>Player or venue</th><th class="r" title="Payouts owed to a player, or tournaments a venue is owed for">Payments</th><th>Oldest</th><th class="r">Owed</th></tr></thead><tbody>

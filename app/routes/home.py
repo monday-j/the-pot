@@ -17,7 +17,7 @@ def dashboard(request: Request):
         venue_paid = conn.execute("SELECT COALESCE(SUM(amount_cents),0) FROM venue_payment WHERE status='paid'").fetchone()[0]
         issues = sync.event_issues(conn)
         by_tournament = flags_by(issues, "tournament_id")
-        payment_issues = square.payment_issues(conn)
+        payment_issues = square.takings_issues(conn)
         unpaid = {i["tournament_id"]: i for i in payment_issues}
         recent = [{**dict(r), "flags": len(by_tournament.get(r["id"], [])), "unpaid": unpaid.get(r["id"])} for r in conn.execute(
             f"""SELECT t.*, s.name AS series_name, s.code AS series_code, {TOURNAMENT_SUMS} FROM tournament t

@@ -58,7 +58,8 @@ CREATE TABLE IF NOT EXISTS tournament (
     venue_entry_pct TEXT NOT NULL DEFAULT '0',
     venue_bracket_pct TEXT NOT NULL DEFAULT '0',
     locked_by INTEGER REFERENCES reconciliation(id) ON DELETE SET NULL,  -- see square.lock_clear_tournaments
-    covered_cents INTEGER,  -- a shortfall the organiser acknowledged and covers (#32); NULL if none
+    -- legacy (#32): a shortfall the organiser covered; no longer read since #37 (a written-off settlement instead)
+    covered_cents INTEGER,
     covered_note TEXT NOT NULL DEFAULT '',
     -- whether what entrants owe is tracked (#36): 'auto' once Square payments are pulled for it, 'on' or 'off'
     takings TEXT NOT NULL DEFAULT 'auto'
@@ -223,8 +224,8 @@ CREATE TABLE IF NOT EXISTS square_category (
     name TEXT NOT NULL DEFAULT '',
     meaning TEXT
 );
--- An entrant whose payment is sorted out some other way (someone else paid for them, a waived fee), by hand (#29).
--- player_id is the player they're reported under (after merges), as in square.reconcile.
+-- Legacy (#29): an entrant whose payment was sorted out some other way, by hand. No longer read since #37: such
+-- decisions are settlements now. player_id is the player they were reported under (after merges).
 CREATE TABLE IF NOT EXISTS entrant_override (
     tournament_id TEXT NOT NULL REFERENCES tournament(id) ON DELETE CASCADE,
     player_id TEXT NOT NULL,

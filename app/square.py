@@ -393,121 +393,107 @@ def payment_rows(conn, tournament_id: str | None = None) -> list[dict]:
     return payments
 
 
-def reconcile(conn, tournament_id: str) -> dict:
-    """Expected vs taken, per player and in total. Payments marked "not a fee" (ignored) don't count, and neither do
-    fully refunded ones (stored at $0), apart from their card fees: Square's payment data doesn't say whether it gave
-    those back. Payments marked "no player needed" count, but aren't asked to be linked (#30)."""
-    expected = expected_by_player(conn, tournament_id)
+def reconcile(conn, tournament_id: str, books: dict | None = None) -> dict:
+    """A tournament's takings: its Square payments, and each entrant's charge from the ledger (#37): what they owed
+    (plus what they paid for others), what their payments that night came to, how it was paid and what's left.
+
+    Payments marked "not a fee" (ignored) don't count, and neither do fully refunded ones (stored at $0), apart from
+    their card fees: Square's payment data doesn't say whether it gave those back. Payments marked "no player needed"
+    count, but aren't asked to be linked (#30). A player whose payment there went to other weeks or credit (they didn't
+    enter, or paid extra) is listed too."""
+    b = books or ledger.books(conn)
     payments = payment_rows(conn, tournament_id)
+    names = {r[0]: r[1] for r in conn.execute("SELECT id, COALESCE(start_date, name) FROM tournament")}
+    for p in payments:  # where its money went, if not (all) to its own night: older weeks, or credit
+        p["elsewhere"] = [{"tournament_id": tid, "day": names.get(tid), "cents": cents, "kind": kind}
+                          for tid, cents, kind in b["payments"].get(p["id"], []) if tid != tournament_id]
     counted = [p for p in payments if not p["ignored"] and p["amount_cents"] > 0 and p["counted_cents"] > 0]
     refunded = [p for p in payments if not p["ignored"] and p["amount_cents"] <= 0]
-    paid = {}
+    tonight = {}
     for p in counted:
         if p["pid"]:
-            paid[p["pid"]] = paid.get(p["pid"], 0) + p["counted_cents"]
+            tonight[p["pid"]] = tonight.get(p["pid"], 0) + p["counted_cents"]
     tags = {r["id"]: r["gamer_tag"] for r in conn.execute(
         "SELECT p.id, p.gamer_tag FROM tournament_entry_c te JOIN player p ON p.id=te.player_id WHERE te.tournament_id=?",
         (tournament_id,))}
     for p in counted:  # a card's payments link to its player even where they weren't entered (#22)
         if p["pid"]:
             tags.setdefault(p["pid"], p["gamer_tag"])
-    resolved = {r["player_id"]: r["note"] for r in conn.execute(
-        "SELECT player_id, note FROM entrant_override WHERE tournament_id=?", (tournament_id,))}
+    settlements = {}
+    for r in conn.execute("""SELECT s.*, COALESCE(a.merged_into, s.player_id) AS pid, pb.gamer_tag AS paid_by_tag
+                             FROM settlement s LEFT JOIN player a ON a.id=s.player_id
+                             LEFT JOIN player pb ON pb.id=COALESCE((SELECT merged_into FROM player WHERE id=s.paid_by),
+                                                                   s.paid_by)
+                             WHERE s.tournament_id=? ORDER BY s.id""", (tournament_id,)):
+        settlements.setdefault(r["pid"], []).append(dict(r))
+    charges = {pid: c for (tid, pid), c in b["charges"].items() if tid == tournament_id}
     players = []
-    for pid in set(expected) | set(paid):
-        want, got = expected.get(pid, 0), paid.get(pid, 0)
-        state = "ok" if got == want else "unpaid" if got == 0 else "short" if got < want else "over"
-        players.append({"id": pid, "tag": tags.get(pid, pid), "expected": want, "paid": got, "diff": got - want,
-                        "state": state, "note": resolved.get(pid)})
-    unlinked = [p for p in counted if not p["pid"]]
-    to_link = [p for p in unlinked if not p["no_player"]]
-    if unlinked:  # card taps carry no names: until they're linked, "unpaid" may just mean "not matched yet"
-        for r in players:
-            if r["state"] == "unpaid":
-                r["state"] = "unmatched"
-    for r in players:  # sorted out by hand, e.g. someone else paid for them (#29)
-        if r["state"] != "ok" and r["note"] is not None:
-            r["state"] = "resolved"
-    order = {"unpaid": 0, "short": 0, "over": 0, "unmatched": 1, "resolved": 2, "ok": 2}
-    players.sort(key=lambda r: (order[r["state"]], r["tag"].lower()))
-    expected_total, taken = sum(expected.values()), sum(p["counted_cents"] for p in counted)
+    for pid in set(charges) | set(tonight):
+        c = charges.get(pid) or ledger.charge_row(tournament_id, pid, "")
+        players.append({**c, "id": pid, "tag": tags.get(pid, pid), "expected": c["due"] + c["covers"],
+                        "paid": tonight.get(pid, 0), "state": c["state"] or "not_entered",
+                        "settlements": settlements.get(pid, [])})
+    order = {"owing": 0, "unmatched": 1, "covered": 2}
+    players.sort(key=lambda r: (order.get(r["state"], 3), r["tag"].lower()))
+    t = b["tournaments"].get(tournament_id)
+    if t is None:  # takings not tracked (e.g. nothing pulled yet): what entrants would owe, for reference
+        t = {**ledger.tournament_row(), "due": sum(expected_by_player(conn, tournament_id).values())}
+        attendees = conn.execute("SELECT COUNT(*) FROM tournament_entry_c WHERE tournament_id=?",
+                                 (tournament_id,)).fetchone()[0]
+    else:
+        attendees = len(charges)
     by_meaning = {}
     for p in payments:
-        for m, c in p["parts"].items():
-            by_meaning[m] = by_meaning.get(m, 0) + c
-    waived = sum(max(-r["diff"], 0) for r in players if r["state"] == "resolved")  # not missing: it's sorted out
+        for m, cents in p["parts"].items():
+            by_meaning[m] = by_meaning.get(m, 0) + cents
+    unlinked = [p for p in counted if not p["pid"]]
+    to_link = [p for p in unlinked if not p["no_player"]]
     takings = [p for p in payments if not p["ignored"]]  # card fees and banking cover whole payments, drinks too
     fees = sum(p["fee_cents"] or 0 for p in takings)
-    banked = sum(p["amount_cents"] - (p["fee_cents"] or 0) for p in takings if p["deposit_id"])
     sold = sum(p["amount_cents"] for p in takings if p["amount_cents"] > 0)
-    return {"payments": payments, "players": players, "expected": expected_total, "taken": taken,
-            "fees": fees, "net": sold - fees, "banked": banked, "sold": sold, "by_meaning": by_meaning,
-            "unmapped": len({l["item_key"] for p in payments for l in p["lines"] if l["meaning"] is None}), "fees_pending": sum(1 for p in counted if p["fee_cents"] is None),
-            "difference": taken - expected_total, "attendees": len(expected), "count": len(counted),
-            "unlinked": len(to_link), "unlinked_cents": sum(p["amount_cents"] for p in to_link),
-            "no_player": len(unlinked) - len(to_link),
+    taken = sum(p["counted_cents"] for p in counted)
+    return {"payments": payments, "players": players, "tracked": tournament_id in b["tournaments"],
+            "expected": t["due"], "taken": taken, "difference": taken - t["due"],
+            "fees": fees, "net": sold - fees, "sold": sold, "by_meaning": by_meaning,
+            "banked": sum(p["amount_cents"] - (p["fee_cents"] or 0) for p in takings if p["deposit_id"]),
+            "fees_pending": sum(1 for p in counted if p["fee_cents"] is None),
+            "unmapped": len({l["item_key"] for p in payments for l in p["lines"] if l["meaning"] is None}),
+            "attendees": attendees, "count": len(counted), "unlinked": len(to_link),
+            "unlinked_cents": sum(p["amount_cents"] for p in to_link), "no_player": len(unlinked) - len(to_link),
+            "anonymous": t["anonymous"], "gap": t["gap"], "written_off": t["written_off"],
+            "owing": sum(1 for r in players if r["state"] == "owing"),
+            "owing_cents": sum(r["balance"] for r in players if r["state"] == "owing"),
             "unmatched": sum(1 for r in players if r["state"] == "unmatched"),
-            "shortfall": max(expected_total - taken - waived, 0), "refunded": len(refunded),
-            "refunded_fees": sum(p["fee_cents"] or 0 for p in refunded),
-            "problems": sum(1 for r in players if r["state"] in ("unpaid", "short", "over"))}
+            "refunded": len(refunded), "refunded_fees": sum(p["fee_cents"] or 0 for p in refunded)}
 
 
-def payment_issues(conn, series_id: int | None = None) -> list[dict]:
-    """Tournaments whose Square reconciliation needs attention, each with a `kind`:
-
-    "missing": linked players are short, or unpaid with every payment linked (players, missing), or less was taken
-    than expected overall (players 0, missing = the shortfall). "link": nothing is missing, but payments still need
-    linking to players or marking "no player needed" (#30). Only tournaments with Square payments pulled are checked: one never pulled (or a
-    series not using Square) would otherwise show everyone as unpaid. Excluded tournaments are skipped.
-    """
+def takings_issues(conn, series_id: int | None = None, books: dict | None = None) -> list[dict]:
+    """Tracked tournaments whose takings need attention on the night's own terms (#37), latest first, each with a
+    `kind`: "link", payments still to link to players (or mark "no player needed"); or "gap", money missing that
+    isn't owed by anyone named, not written off. Players who owe don't count: what they owe is followed up on its own
+    (ledger.owing). Excluded tournaments, and ones whose takings aren't tracked, are skipped."""
+    b = books or ledger.books(conn)
     out = []
-    for t in conn.execute("""SELECT t.id, t.name, t.series_id, t.start_date, t.covered_cents FROM tournament t
-                             WHERE t.excluded=0 AND (? IS NULL OR t.series_id=?)
-                             AND EXISTS (SELECT 1 FROM square_payment WHERE tournament_id=t.id)
-                             ORDER BY t.start_date DESC""", (series_id, series_id)).fetchall():
-        r = reconcile(conn, t["id"])
-        players, cents = missing(r)
-        row = {"tournament_id": t["id"], "tournament_name": t["name"], "series_id": t["series_id"],
-               "players": players, "missing": cents, "unlinked": r["unlinked"], "unlinked_cents": r["unlinked_cents"]}
-        if cents and (t["covered_cents"] is None or cents > t["covered_cents"]):  # covered by the organiser (#32)
-            out.append({**row, "kind": "missing"})
-        elif r["unlinked"]:
-            out.append({**row, "kind": "link"})
+    for t in conn.execute("""SELECT id, name, series_id, start_date FROM tournament WHERE (? IS NULL OR series_id=?)
+                             ORDER BY start_date DESC""", (series_id, series_id)):
+        x = b["tournaments"].get(t["id"])
+        if x is None or not (x["to_link"] or x["gap"]):
+            continue
+        out.append({"tournament_id": t["id"], "tournament_name": t["name"], "series_id": t["series_id"],
+                    "kind": "link" if x["to_link"] else "gap", "unlinked": x["to_link"],
+                    "unlinked_cents": x["to_link_cents"], "gap": x["gap"]})
     return out
 
 
-def missing(r: dict) -> tuple[int, int]:
-    """(players, cents) missing from a tournament's reconciliation: what linked players are short (unpaid ones only
-    once every payment is linked), else how much less was taken than expected overall (players 0)."""
-    short = [p for p in r["players"] if p["state"] in ("unpaid", "short")]
-    if short:
-        return len(short), -sum(p["diff"] for p in short)
-    return 0, r["shortfall"]
-
-
-def cover_shortfall(conn, tournament_id: str, note: str):
-    """Acknowledge what's missing from a tournament as covered by the organiser (#32): it stops being flagged unless
-    more goes missing later."""
-    check_unlocked(conn, tournament_id)
-    _, cents = missing(reconcile(conn, tournament_id))
-    if not cents:
-        raise RuleError("Nothing is missing from this tournament")
-    conn.execute("UPDATE tournament SET covered_cents=?, covered_note=? WHERE id=?", (cents, note.strip(), tournament_id))
-
-
-def uncover_shortfall(conn, tournament_id: str):
-    check_unlocked(conn, tournament_id)
-    conn.execute("UPDATE tournament SET covered_cents=NULL, covered_note='' WHERE id=?", (tournament_id,))
-
-
 def lock_clear_tournaments(conn) -> int:
-    """Lock the tournaments up to the latest bank reconciliation that are clear of issues: no payments missing or to
-    link, no events with unfinalised placements (#27). A locked tournament's figures and payment links can't change,
-    and imports skip it (#28), until that reconciliation is undone. Returns how many were locked."""
+    """Lock the tournaments up to the latest bank reconciliation that are clear of issues: no payments to link or money
+    missing that nobody named owes, no events with unfinalised placements (#27, #37). Players who still owe don't hold
+    it open: their debts can be paid later all the same. A locked tournament's figures, charges and payment links can't
+    change, and imports skip it (#28), until that reconciliation is undone. Returns how many were locked."""
     last = bank.latest(conn)
     if last is None:
         return 0
-    flagged = {i["tournament_id"] for i in payment_issues(conn)} | {i["tournament_id"] for i in sync.event_issues(conn)}
+    flagged = {i["tournament_id"] for i in takings_issues(conn)} | {i["tournament_id"] for i in sync.event_issues(conn)}
     ids = [r[0] for r in conn.execute(
         """SELECT id FROM tournament WHERE locked_by IS NULL AND excluded=0 AND COALESCE(start_date, '') != ''
            AND start_date <= ?""", (last["reconciled_on"],)) if r[0] not in flagged]
@@ -521,21 +507,6 @@ def check_unlocked(conn, tournament_id: str):
     t = conn.execute("SELECT locked_by FROM tournament WHERE id=?", (tournament_id,)).fetchone()
     if t and t["locked_by"] is not None:
         raise RuleError(bank.locked_message(conn, t["locked_by"]))
-
-
-def resolve_entrant(conn, tournament_id: str, player_id: str, note: str):
-    """Mark an entrant's payment as sorted out some other way (#29), with a note saying how."""
-    if not note.strip():
-        raise RuleError("Say how it was sorted out, e.g. who paid for them")
-    check_unlocked(conn, tournament_id)
-    conn.execute("""INSERT INTO entrant_override (tournament_id, player_id, note, created_at) VALUES (?,?,?,?)
-                    ON CONFLICT(tournament_id, player_id) DO UPDATE SET note=excluded.note""",
-                 (tournament_id, player_id, note.strip(), sync.now()))
-
-
-def unresolve_entrant(conn, tournament_id: str, player_id: str):
-    check_unlocked(conn, tournament_id)
-    conn.execute("DELETE FROM entrant_override WHERE tournament_id=? AND player_id=?", (tournament_id, player_id))
 
 
 def link_payment(conn, payment_id: str, player_id: str | None):

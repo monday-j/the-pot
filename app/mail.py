@@ -55,14 +55,14 @@ def summary(conn, today: str | None = None) -> tuple[str, str]:
         lines.append("Bank: never reconciled. The first reconciliation sets the opening balance.")
     lines.append(f"  Not reconciled yet: {money(moved['in'])} in ({len(moved['deposits'])} deposits), "
                  f"{money(moved['out'])} out ({len(moved['players']) + len(moved['venues'])} payments).{link('/bank')}")
-    issues = square.payment_issues(conn)
-    missing = [i for i in issues if i["kind"] == "missing"]
+    issues = square.takings_issues(conn)
+    gaps = [i for i in issues if i["kind"] == "gap"]
     to_link = [i for i in issues if i["kind"] == "link"]
     lines.append("")
-    lines.append(f"Square payments: {len(missing)} tournament{'s' if len(missing) != 1 else ''} with missing payments, "
-                 f"{len(to_link)} with payments to link.")
+    lines.append(f"Square payments: {len(to_link)} tournament{'s' if len(to_link) != 1 else ''} with payments to link, "
+                 f"{len(gaps)} with money missing that nobody named owes.")
     for i in issues[:10]:
-        what = (f"{money(i['missing'])} missing" if i["kind"] == "missing"
+        what = (f"{money(i['gap'])} missing" if i["kind"] == "gap"
                 else f"{i['unlinked']} payment{'s' if i['unlinked'] != 1 else ''} to link")
         lines.append(f"  - {i['tournament_name']}: {what}{link('/tournaments/' + i['tournament_id'] + '#square')}")
     if len(issues) > 10:

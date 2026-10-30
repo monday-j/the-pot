@@ -128,7 +128,7 @@ def test_only_fee_lines_count_once_their_items_have_a_meaning(night):
     r = square.reconcile(conn, "t1")
     assert (r["taken"], r["unmapped"]) == (4000, 0)  # the Coke is left out
     assert r["by_meaning"] == {"venue": 1000, "bracket": 1000, "other": 500, "catchup": 1000}
-    assert {p["id"]: p["state"] for p in r["players"]} == {"u1": "ok", "u2": "ok", "u3": "ok", "u4": "ok"}
+    assert {p["id"]: p["state"] for p in r["players"]} == {"u1": "paid", "u2": "paid", "u3": "paid", "u4": "paid"}
     assert r["sold"] == 4500 and r["net"] == 4500  # card fees and banking still cover the whole payment
     with pytest.raises(RuleError):
         square.set_meaning(conn, "coke", "beer")

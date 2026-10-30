@@ -1,7 +1,7 @@
 import pytest
 from dataclasses import replace
 
-from app import bank, config, square, sync
+from app import bank, config, ledger, square, sync
 from app.payouts import RuleError
 from tests.test_square import FakeSquare, TwoNightsClient, fnb, oauth_env, pay  # noqa: F401 (fixtures)
 from tests.test_sync import conn  # noqa: F401
@@ -85,16 +85,16 @@ def test_tournaments_lock_once_clear_and_unlock_with_the_reconciliation(two_nigh
     bank.reconcile(two_nights, "2026-01-31", 0, "")
     assert square.lock_clear_tournaments(two_nights) == 0  # both nights have payments to sort out
     square.link_payment(two_nights, "A", "u1")
-    square.link_payment(two_nights, "B", "u2")
-    for player in ("u3", "u4"):
-        square.resolve_entrant(two_nights, "t1", player, "paid cash")
+    square.link_payment(two_nights, "B", "u2")  # Cat and Dan still owe, but that doesn't hold t1 open (#37)
     assert square.lock_clear_tournaments(two_nights) == 1
     locked = {r[0]: r[1] for r in two_nights.execute("SELECT id, locked_by FROM tournament")}
     assert locked["t1"] is not None and locked["t3"] is None
     with pytest.raises(RuleError, match="Locked by the bank reconciliation of 2026-01-31"):
         square.link_payment(two_nights, "A", None)
-    with pytest.raises(RuleError, match="Locked"):
-        square.unresolve_entrant(two_nights, "t1", "u3")
+    with pytest.raises(RuleError, match="locked"):
+        ledger.settle(two_nights, "t1", "u3", "waived", 100, "TO", day="2026-01-20")
+    ledger.settle(two_nights, "t1", "u3", "waived", 100, "TO", day="2026-02-01")  # its debts can still be settled
+    assert two_nights.execute("SELECT COUNT(*) FROM charge WHERE tournament_id='t1'").fetchone()[0] == 4  # frozen
     square.link_payment(two_nights, "C", "u2")  # t3 isn't locked: still editable
     before = {r[0]: r[1] for r in two_nights.execute(
         "SELECT po.id, po.amount_cents FROM payout po JOIN event e ON e.id=po.event_id WHERE e.tournament_id='t1'")}

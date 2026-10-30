@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter, Form, HTTPException, Request
 
-from .. import bank, db, square, sync
+from .. import bank, db, ledger, square, sync
 from ..payouts import RuleError, venue_breakdown
 from ..square_client import SquareConfigError
 from ..web import (EVENT_SUMS, NO_SQUARE, back, dollars_to_cents, one, parse_venue, pick_venue, render, square_client,
@@ -112,33 +112,49 @@ def square_flag(payment_id: str, flag: str):
     return back(f"/tournaments/{p['tournament_id']}#square")
 
 
-@router.post("/tournaments/{tournament_id}/entrants/{player_id}/resolve")
-def resolve_entrant(tournament_id: str, player_id: str, note: str = Form(""), undo: str = Form("")):
+@router.post("/tournaments/{tournament_id}/entrants/{player_id}/settle")
+def settle_entrant(tournament_id: str, player_id: str, method: str = Form(...), amount: str = Form(""),
+                   reason: str = Form(""), paid_by: str = Form("")):
+    """Settle what an entrant still owes some other way (#37): paid by another player, waived, written off or sorted
+    out, or record a bank transfer or cash they paid for it. A blank amount is all they owe."""
+    to = f"/tournaments/{tournament_id}#paid"
     try:
         with db.session() as conn:
             one(conn, "SELECT id FROM tournament WHERE id=?", tournament_id)
-            if undo:
-                square.unresolve_entrant(conn, tournament_id, player_id)
+            c = ledger.books(conn)["charges"].get((tournament_id, ledger.canonical(conn, player_id)))
+            cents = dollars_to_cents(amount) if amount.strip() else (c["balance"] if c else 0)
+            if method in ledger.RECEIPT_METHODS:
+                ledger.add_receipt(conn, player_id, method, cents, bank.today(), tournament_id, note=reason)
             else:
-                square.resolve_entrant(conn, tournament_id, player_id, note)
+                ledger.settle(conn, tournament_id, player_id, method, cents, reason, paid_by or None)
             square.lock_clear_tournaments(conn)
     except RuleError as e:
-        return back(f"/tournaments/{tournament_id}", str(e))
-    return back(f"/tournaments/{tournament_id}#paid")
+        return back(to, str(e))
+    return back(to)
 
 
-@router.post("/tournaments/{tournament_id}/cover")
-def cover_shortfall(tournament_id: str, note: str = Form(""), undo: str = Form("")):
+@router.post("/settlements/{settlement_id}/delete")
+def delete_settlement(settlement_id: int):
+    with db.session() as conn:
+        s = one(conn, "SELECT * FROM settlement WHERE id=?", settlement_id)
+        to = f"/tournaments/{s['tournament_id']}#paid" if s["tournament_id"] else "/"
+        try:
+            ledger.delete_settlement(conn, settlement_id)
+        except RuleError as e:
+            return back(to, str(e))
+    return back(to)
+
+
+@router.post("/tournaments/{tournament_id}/gap")
+def write_off_gap(tournament_id: str, reason: str = Form("")):
+    """Write off what's missing from a tournament that nobody named owes (#37; was "I'll cover it", #32)."""
     try:
         with db.session() as conn:
             one(conn, "SELECT id FROM tournament WHERE id=?", tournament_id)
-            if undo:
-                square.uncover_shortfall(conn, tournament_id)
-            else:
-                square.cover_shortfall(conn, tournament_id, note)
+            ledger.write_off_gap(conn, tournament_id, reason)
             square.lock_clear_tournaments(conn)
     except RuleError as e:
-        return back(f"/tournaments/{tournament_id}", str(e))
+        return back(f"/tournaments/{tournament_id}#square", str(e))
     return back(f"/tournaments/{tournament_id}#square")
 
 
@@ -182,6 +198,8 @@ def tournament_page(request: Request, tournament_id: str):
                                              (tournament_id,)).fetchone()}
         venues = venue_options(conn)
         recon = square.reconcile(conn, tournament_id)
-        recon["missing_players"], recon["missing"] = square.missing(recon)
+        players = conn.execute("""SELECT id, gamer_tag FROM player WHERE merged_into IS NULL
+                                  ORDER BY gamer_tag COLLATE NOCASE""").fetchall()
     return render(request, "tournament.html", t=t, events=events, attendees=list(attendees.values()), venue=venue,
-                  venues=venues, recon=recon, square_setup=square_setup(), meanings=square.MEANINGS)
+                  venues=venues, recon=recon, square_setup=square_setup(), meanings=square.MEANINGS, players=players,
+                  states=ledger.STATES, settle_methods={**ledger.RECEIPT_METHODS, **ledger.CHARGE_METHODS})

@@ -49,7 +49,7 @@ def test_summary_lists_what_is_waiting(fnb, monkeypatch):  # noqa: F811
     subject, body = mail.summary(fnb, "2026-01-20")
     assert subject.endswith("(1 tournament needs attention)")
     assert "last reconciled 2026-01-06 (14 days ago)" in body and "$25.00 in (1 deposits)" in body
-    assert "Friday Night Brawl #90: $30.00 missing http://pot.lan:8000/tournaments/t1#square" in body
+    assert "Friday Night Brawl #90: 1 payment to link http://pot.lan:8000/tournaments/t1#square" in body
     assert "to players" in body
 
 

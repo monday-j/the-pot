@@ -68,7 +68,7 @@ def series_page(request: Request, ref: str, period: int | None = None):
         shown = next((p for p in periods if p["id"] == period), current)
         issues = sync.event_issues(conn, series_id=series_id)
         by_tournament = flags_by(issues, "tournament_id")
-        payment_issues = square.payment_issues(conn, series_id)
+        payment_issues = square.takings_issues(conn, series_id)
         unpaid = {i["tournament_id"]: i for i in payment_issues}
         tournaments = []
         for t in conn.execute(f"""SELECT t.*, {TOURNAMENT_SUMS} FROM tournament t WHERE t.series_id=?

@@ -1,0 +1,52 @@
+{% extends "base.html" %}{% import "_macros.html" as m %}{% block title %}Owed to us · The Pot{% endblock %}{% block body %}
+<h1>Owed to us</h1>
+<div class="tiles">
+<div class="tile{{ ' owing' if owed.cents }}"><span class="k">Owed to us</span><span class="v">{{ owed.cents|money }}</span>
+<span class="s">{% if owed.players %}{{ owed.players|length }} player{{ "s" if owed.players|length != 1 }} · oldest {{ owed.oldest_days }} day{{ "s" if owed.oldest_days != 1 }}{% else %}nobody owes anything{% endif %}</span>
+{% if owed.cents %}<div class="aging" title="{% for upto, label in ages %}{{ label }}: {{ owed.ages[loop.index0]|money }}{{ ', ' if not loop.last }}{% endfor %}">{% for c in owed.ages %}{% if c %}<span class="a{{ loop.index0 }}" style="width:{{ (100 * c / owed.cents)|round(1) }}%"></span>{% endif %}{% endfor %}</div>{% endif %}</div>
+<a class="tile{{ ' credit' if owed.credit }}" href="#credit"><span class="k">Credit held</span><span class="v">{{ owed.credit|money }}</span>
+<span class="s">{% if credits %}{{ credits|length }} player{{ "s" if credits|length != 1 }} paid more than they owed{% else %}nobody has credit{% endif %}</span></a>
+</div>
+
+<h2>Who owes <span class="n">· {{ owed.players|length }}</span></h2>
+<div class="tw"><table class="sortable"><thead><tr><th>Player</th><th>Nights</th>{% for upto, label in ages %}<th class="r">{{ label }}</th>{% endfor %}<th class="r">Owes</th><th></th></tr></thead><tbody>
+{% for p in owed.players %}<tr><td>{{ m.player(p.id, p.name) }}</td>
+<td>{% for c in p.nights %}<div>{{ m.tournament(c.tournament_id, c.tournament_name) }} <span class="mut">{{ c.date|shortday }} · {{ c.balance|money }}</span></div>{% endfor %}</td>
+{% for c in p.ages %}{{ m.mtd(c, "neg" if loop.index0 >= 2 else "") }}{% endfor %}{{ m.mtd(p.cents, "neg") }}
+<td><details class="panel act"><summary>Paid</summary><div><form method="post" action="/owed/{{ p.id|urlq }}/receipt" class="toolbar">
+<label>How<select name="method">{% for k, label in receipt_methods.items() %}<option value="{{ k }}">{{ label }}</option>{% endfor %}</select></label>
+<label>Amount $<input name="amount" size="7" placeholder="{{ '%.2f' % (p.cents / 100) }}"></label>
+<label>On<input type="date" name="received_on" max="{{ today }}" title="The day it reached you (blank: today)"></label>
+<label>Reference<input name="reference" size="10"></label><button>Record</button></form>
+<p class="help">Pays their oldest nights first; anything over is credit for next time. A bank transfer counts toward the bank balance.</p></div></details>
+<details class="confirm"><summary>Write off</summary><div><form method="post" action="/owed/{{ p.id|urlq }}/write-off" class="toolbar">
+<label>Why<input name="reason" size="18" placeholder="e.g. left the scene" required></label><button class="danger">Write off {{ p.cents|money }}</button></form></div></details></td></tr>
+{% else %}<tr><td colspan="{{ ages|length + 4 }}" class="empty">Nobody owes anything.</td></tr>{% endfor %}</tbody>
+{% if owed.players %}<tfoot><tr><td colspan="2">{{ owed.players|length }} player{{ "s" if owed.players|length != 1 }}</td>{% for c in owed.ages %}{{ m.mtd(c) }}{% endfor %}{{ m.mtd(owed.cents) }}<td></td></tr></tfoot>{% endif %}</table></div>
+<p class="help">Each night someone entered and didn't pay in full stays here until they pay, someone pays for them, or it's written off. Settle one night on its own from the tournament's Takings step.</p>
+
+<h2 id="credit">Credit <span class="n">· {{ credits|length }}</span></h2>
+<div class="tw"><table class="sortable"><thead><tr><th>Player</th><th class="r">Credit</th><th></th></tr></thead><tbody>
+{% for c in credits %}<tr><td>{{ m.player(c.id, c.name) }}</td>{{ m.mtd(c.cents) }}
+<td><span class="mut">kept for their next tournament</span> <details class="panel act"><summary>Something else</summary><div><form method="post" action="/owed/{{ c.id|urlq }}/credit" class="toolbar">
+<label>Instead<select name="method">{% for k, label in credit_methods.items() %}<option value="{{ k }}">{{ label }}</option>{% endfor %}</select></label>
+<label>Amount $<input name="amount" size="7" placeholder="{{ '%.2f' % (c.cents / 100) }}"></label>
+<label>Note<input name="reason" size="16"></label><button class="sec">Save</button></form></div></details></td></tr>
+{% else %}<tr><td colspan="3" class="empty">Nobody has credit.</td></tr>{% endfor %}</tbody></table></div>
+{% if used %}<h3>Credit not kept <span class="n">· latest {{ used|length }}</span></h3>
+<div class="tw"><table><thead><tr><th>Day</th><th>Player</th><th>What</th><th class="r">Amount</th><th></th></tr></thead><tbody>
+{% for s in used %}<tr><td>{{ s.settled_on|shortday }}</td><td>{{ m.player(s.player_id, s.gamer_tag) }}</td><td>{{ credit_methods[s.method] }}{% if s.reason %} <span class="mut">{{ s.reason }}</span>{% endif %}</td>{{ m.mtd(s.amount_cents) }}
+<td>{% if not locked_through or s.settled_on > locked_through %}<form class="inline" method="post" action="/settlements/{{ s.id }}/delete"><input type="hidden" name="next" value="/owed#credit"><button class="sec">Undo</button></form>{% endif %}</td></tr>{% endfor %}</tbody></table></div>{% endif %}
+
+<h2 id="received">Paid outside Square <span class="n">· latest {{ receipts|length }}</span></h2>
+<div class="tw"><table><thead><tr><th>Day</th><th>Player</th><th>How</th><th class="r">Amount</th><th>Paid for</th><th></th></tr></thead><tbody>
+{% for r in receipts %}<tr><td>{{ r.received_on|shortday }}</td><td>{{ m.player(r.player_id, r.gamer_tag) }}</td><td>{{ receipt_methods[r.method] }}{% if r.reference %} <span class="mut">{{ r.reference }}</span>{% endif %}{% if r.note %} <span class="mut">{{ r.note }}</span>{% endif %}</td>{{ m.mtd(r.amount_cents) }}
+<td>{% for w in r.went %}<div>{% if w.tournament_id %}{{ m.tournament(w.tournament_id, w.tournament_name) }}{% else %}credit{% endif %} <span class="mut">{{ w.cents|money }}</span></div>{% endfor %}</td>
+<td>{% if not r.reconciliation_id and (not locked_through or r.received_on > locked_through) %}<form class="inline" method="post" action="/receipts/{{ r.id }}/delete"><input type="hidden" name="next" value="/owed#received"><button class="sec">Undo</button></form>{% endif %}</td></tr>
+{% else %}<tr><td colspan="6" class="empty">No bank transfers or cash recorded yet.</td></tr>{% endfor %}</tbody></table></div>
+
+<h2 id="late">Paid late <span class="n">· latest {{ late|length }}</span></h2>
+<div class="tw"><table><thead><tr><th>Night</th><th>Player</th><th class="r">Owed</th><th class="r">Paid later</th></tr></thead><tbody>
+{% for c in late %}<tr><td>{{ m.tournament(c.tournament_id, c.tournament_name) }} <span class="mut">{{ c.date|shortday }}</span></td><td>{{ m.player(c.player_id, c.name) }}</td>{{ m.mtd(c.due + c.covers) }}{{ m.mtd(c.late) }}</tr>
+{% else %}<tr><td colspan="4" class="empty">Nobody has paid a night late.</td></tr>{% endfor %}</tbody></table></div>
+{% endblock %}

@@ -172,6 +172,7 @@ details.panel>div{padding:0 .8rem .8rem}
 .empty{color:var(--mut);padding:1.2rem;text-align:center;border:1px dashed var(--line-strong);border-radius:var(--r)}
 .aging{display:flex;height:.5rem;border-radius:var(--r);overflow:hidden;background:var(--raised);min-width:6rem}
 .aging>span{display:block}
+details.panel.act{display:inline-block;margin:0;vertical-align:middle}details.panel.act>summary{padding:.2rem .55rem}
 .aging .a0{background:var(--wait)}.aging .a1{background:#ff8155}.aging .a2{background:var(--owing)}.aging .a3{background:#c2364a}
 
 /* --- old components, until their pages are rebuilt --------------------------------------------------------------- */

@@ -64,22 +64,39 @@ def stages(conn, series_id: int | None = None, books: dict | None = None) -> dic
     return lanes
 
 
+# How old a debt is, in days: up to a week, a month, three months, or more (#43).
+AGES = ((7, "0–7 days"), (30, "8–30 days"), (90, "31–90 days"), (None, "90+ days"))
+
+
+def age_bucket(days: int | None) -> int:
+    for i, (upto, _) in enumerate(AGES):
+        if upto is None or (days or 0) <= upto:
+            return i
+    return len(AGES) - 1
+
+
 def owed_to_us(conn, books: dict | None = None) -> dict:
-    """What players owe us: the total, how many owe, the days since the oldest unpaid night, and per player
-    (most owed first) their balance and the nights behind it."""
+    """What players owe us: the total, how many owe, the days since the oldest unpaid night, the total in each age
+    bucket (AGES), and per player (most owed first) their balance, its ages and the nights behind it."""
     b = books or ledger.books(conn)
     today = bank.today()
     names = {r[0]: r[1] for r in conn.execute("SELECT id, gamer_tag FROM player")}
     tnames = {r[0]: r[1] for r in conn.execute("SELECT id, name FROM tournament")}
-    players = []
+    players, ages = [], [0] * len(AGES)
     for pid, cs in ledger.owing(b).items():
+        nights, by_age = [], [0] * len(AGES)
+        for c in cs:
+            days = _days_since(c["date"] or None, today)
+            nights.append({**c, "tournament_name": tnames.get(c["tournament_id"]), "days": days,
+                           "age": age_bucket(days)})
+            by_age[age_bucket(days)] += c["balance"]
+            ages[age_bucket(days)] += c["balance"]
         players.append({"id": pid, "name": names.get(pid, pid), "cents": sum(c["balance"] for c in cs),
-                        "since": cs[0]["date"], "nights": [{**c, "tournament_name": tnames.get(c["tournament_id"])}
-                                                           for c in cs]})
+                        "since": cs[0]["date"], "nights": nights, "ages": by_age})
     players.sort(key=lambda p: (-p["cents"], p["name"].lower()))
     oldest = min((p["since"] for p in players if p["since"]), default=None)
     return {"cents": sum(p["cents"] for p in players), "players": players, "oldest_days": _days_since(oldest, today),
-            "credit": sum(b["credit"].values())}
+            "ages": ages, "credit": sum(b["credit"].values())}
 
 
 def to_pay(conn) -> dict:

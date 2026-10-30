@@ -6,7 +6,7 @@
 {% set path = request.url.path %}
 {% block nav %}<nav><a class="brand" href="/"><img src="/static/favicon.svg" alt="" width="18" height="18">The Pot</a>
 <a href="/" class="{{ 'on' if path == '/' }}">Run sheet</a>
-<a href="/#owed">Owed to us</a>
+<a href="/owed" class="{{ 'on' if path.startswith('/owed') }}">Owed to us</a>
 <a href="/#to-pay">To pay</a>
 <a href="/bank" class="{{ 'on' if path.startswith('/bank') }}">Bank</a>
 <span class="sep"></span>

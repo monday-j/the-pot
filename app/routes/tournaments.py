@@ -172,10 +172,10 @@ def confirm_paid_for(tournament_id: str, paid_by: str = Form(...), player_id: li
 
 
 @router.post("/settlements/{settlement_id}/delete")
-def delete_settlement(settlement_id: int):
+def delete_settlement(settlement_id: int, next: str = Form("")):
     with db.session() as conn:
         s = one(conn, "SELECT * FROM settlement WHERE id=?", settlement_id)
-        to = f"/tournaments/{s['tournament_id']}#paid" if s["tournament_id"] else "/"
+        to = safe_next(next, f"/tournaments/{s['tournament_id']}#paid" if s["tournament_id"] else "/owed#credit")
         try:
             ledger.delete_settlement(conn, settlement_id)
         except RuleError as e:

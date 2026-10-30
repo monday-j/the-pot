@@ -4,7 +4,7 @@
 {% if unmapped %}<div class="strip"><a href="/square/items">{{ unmapped }} Square item{{ "s" if unmapped != 1 }} with no meaning yet</a>: until you say what {{ "they're" if unmapped != 1 else "it's" }} for, takings can't be split into fees, food and the rest.</div>{% endif %}
 
 <div class="tiles">
-<a class="tile{{ ' owing' if owed.cents }}" href="#owed"><span class="k">Owed to us</span><span class="v">{{ owed.cents|money }}</span>
+<a class="tile{{ ' owing' if owed.cents }}" href="/owed"><span class="k">Owed to us</span><span class="v">{{ owed.cents|money }}</span>
 <span class="s">{% if owed.players %}{{ owed.players|length }} player{{ "s" if owed.players|length != 1 }} · oldest {{ owed.oldest_days }} day{{ "s" if owed.oldest_days != 1 }}{% else %}nobody owes anything{% endif %}{% if owed.credit %} · {{ owed.credit|money }} credit held{% endif %}</span></a>
 <a class="tile{{ ' acc' if topay.cents }}" href="#to-pay"><span class="k">To pay</span><span class="v">{{ topay.cents|money }}</span>
 <span class="s">{% if topay.recipients %}{{ topay.recipients|length }} recipient{{ "s" if topay.recipients|length != 1 }}{% if bank.estimate is not none %} · {% if topay.cents > bank.estimate %}<span class="neg">more than the {{ bank.estimate|money }} in the bank</span>{% else %}{{ (bank.estimate - topay.cents)|money }} left in the bank after{% endif %}{% endif %}{% else %}nobody is owed anything{% endif %}</span></a>
@@ -32,13 +32,6 @@
 {% if key == "done" and cards|length > done_shown %}<p class="mut">and {{ cards|length - done_shown }} earlier, on the <a href="/series">series pages</a>.</p>{% endif %}
 </section>{% endfor %}
 </div>
-
-<h2 id="owed">Owed to us <span class="n">· {{ owed.players|length }}</span></h2>
-<div class="tw"><table class="sortable"><thead><tr><th>Player</th><th>Nights</th><th>Since</th><th class="r">Owes</th></tr></thead><tbody>
-{% for p in owed.players %}<tr><td>{{ m.player(p.id, p.name) }}</td>
-<td>{% for c in p.nights %}{{ m.tournament(c.tournament_id, c.tournament_name) }} <span class="mut">{{ c.balance|money }}</span>{{ "," if not loop.last }} {% endfor %}</td>
-<td>{{ p.since|shortday }}</td>{{ m.mtd(p.cents, "neg") }}</tr>
-{% else %}<tr><td colspan="4" class="empty">Nobody owes anything.</td></tr>{% endfor %}</tbody></table></div>
 
 <h2 id="to-pay">To pay <span class="n">· {{ topay.recipients|length }}</span></h2>
 <div class="tw"><table class="sortable"><thead><tr><th>Player or venue</th><th class="r" title="Payouts owed to a player, or tournaments a venue is owed for">Payments</th><th>Oldest</th><th class="r">Owed</th></tr></thead><tbody>

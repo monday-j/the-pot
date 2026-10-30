@@ -14,7 +14,7 @@
 <tr><th>{{ venue.info.cut.entry_pct }}% of venue fees ({{ venue.info.entry_fee|money }} × {{ venue.info.attendees }} attendees = {{ venue.info.entry_collected|money }})</th><td>{{ venue.parts.entry_share|money }}</td></tr>
 <tr><th>{{ venue.info.cut.bracket_pct }}% of bracket fees (collected {{ venue.info.bracket_collected|money }})</th><td>{{ venue.parts.bracket_share|money }}</td></tr>
 <tr><th><b>Venue total</b></th><td><b>{{ venue.parts.total|money }}</b>{% if venue.payment %}{{ m.discrepancy(venue.payment.amount_cents, venue.payment.computed_cents) }}
- {{ m.status(venue.payment.status, venue.payment.paid_at) }} {{ m.venuebtn(t.id, venue.payment.status, here) }}{% if venue.payment.note %} <span class="mut">{{ venue.payment.note }}</span>{% endif %}{% endif %}</td></tr>
+ {{ m.status(venue.payment.status, venue.payment.paid_at, venue.payment.paid_on) }} {{ m.venuebtn(t.id, venue.payment.status, here) }}{% if venue.payment.note %} <span class="mut">{{ venue.payment.note }}</span>{% endif %}{% endif %}</td></tr>
 </table>
 {% if venue.info.unruled %}<p class="help">No payout rule for {{ venue.info.unruled|join(", ") }}, so its bracket fees are counted as $0 here.</p>{% endif %}
 {% endif %}

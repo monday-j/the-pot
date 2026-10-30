@@ -50,9 +50,14 @@ def test_the_first_reconciliation_is_the_opening_balance_and_later_ones_compare(
     pay_out(two_nights, "2026-01-08", po)
     e = bank.expected(two_nights, "2026-01-10")
     assert (e["in"], e["out"], e["expected"]) == (1000, amount, 10000 + 1000 - amount)
-    bank.reconcile(two_nights, "2026-01-10", 10000 + 1000 - amount - 300, "  $3 bank fee  ")  # doesn't match: kept
+    with pytest.raises(RuleError, match="3.00 less than expected: explain the difference first"):
+        bank.reconcile(two_nights, "2026-01-10", 10000 + 1000 - amount - 300, "")  # doesn't match
+    bank.add_adjustment(two_nights, "2026-01-09", -300, "bank_fee", " monthly fee ")
+    assert bank.expected(two_nights, "2026-01-10")["expected"] == 10000 + 1000 - amount - 300
+    bank.reconcile(two_nights, "2026-01-10", 10000 + 1000 - amount - 300, "")
     [latest, opening] = bank.history(two_nights)
-    assert (latest["difference"], latest["note"], latest["deposits"], latest["paid_out"]) == (-300, "$3 bank fee", 1, 1)
+    assert (latest["difference"], latest["adjustments"], latest["unexplained"]) == (-300, 1, 0)  # what it explained
+    assert (latest["deposits"], latest["paid_out"]) == (1, 1)
     assert opening["difference"] == 0
     assert bank.expected(two_nights, "2026-01-31")["expected"] == latest["balance_cents"] + 5000
 
@@ -138,9 +143,13 @@ def test_bank_pages(client):  # noqa: F811
     client.post("/bank", data={"deposited_on": "2026-01-05", "amount": "20"})
     page = client.get("/bank?on=2026-01-06").text
     assert "$150.00</b> expected on 2026-01-06" in page
-    page = client.post("/bank/reconcile", data={"reconciled_on": "2026-01-06", "balance": "149",
-                                                 "note": "fee"}).text
-    assert "-$1.00" in page and "Reconciled to <b>2026-01-06</b>" in page
+    page = client.post("/bank/reconcile", data={"reconciled_on": "2026-01-06", "balance": "149", "note": ""}).text
+    assert "1.00 less than expected" in page
+    page = client.post("/bank/adjustments", data={"occurred_on": "2026-01-06", "amount": "1", "direction": "out",
+                                                  "category": "bank_fee", "note": "fee"}).text
+    assert "bank fee" in page and "$149.00</b> expected on 2026-01-06" in page
+    page = client.post("/bank/reconcile", data={"reconciled_on": "2026-01-06", "balance": "149", "note": ""}).text
+    assert "-$1.00" in page and "Reconciled to <b>2026-01-06</b>" in page and "1 explained" in page
     assert "Locked by the bank reconciliation of 2026-01-04" in client.post("/bank/1/delete").text
     assert "can't change" not in client.get("/bank/2").text
     client.post("/bank/reconcile/undo")
@@ -294,3 +303,56 @@ def test_locked_things_refuse_changes_on_the_pages(client, monkeypatch):  # noqa
     client.post(f"/payouts/{po}/paid", data={"undo": "1"})
     with main.db.session() as conn:
         assert conn.execute("SELECT status FROM payout WHERE id=?", (po,)).fetchone()[0] == "owed"
+
+
+def test_a_difference_can_be_locked_anyway_and_explained_later(two_nights):
+    bank.reconcile(two_nights, "2026-01-05", 10000, "opening")
+    with pytest.raises(RuleError, match="Say why"):
+        bank.reconcile(two_nights, "2026-01-10", 9900, " ", anyway=True)
+    bank.reconcile(two_nights, "2026-01-10", 9900, "can't find it", anyway=True)
+    [latest, _] = bank.history(two_nights)
+    assert (latest["difference"], latest["unexplained"]) == (-100, -100)
+    [a] = two_nights.execute("SELECT * FROM bank_adjustment").fetchall()
+    assert (a["category"], a["amount_cents"], a["reconciliation_id"]) == ("unexplained", -100, latest["id"])
+    with pytest.raises(RuleError, match="Locked"):
+        bank.delete_adjustment(two_nights, a["id"])
+    bank.update_adjustment(two_nights, a["id"], "bank_fee", "found it: card fee")  # locked, but can be explained
+    assert bank.history(two_nights)[0]["unexplained"] == 0
+    with pytest.raises(RuleError, match="locked"):
+        bank.add_adjustment(two_nights, "2026-01-08", 100, "interest")
+
+
+def test_bank_transfers_from_players_count_as_money_in_and_lock_with_the_reconciliation(two_nights):
+    from app import ledger
+    bank.reconcile(two_nights, "2026-01-05", 0, "")
+    rid = ledger.add_receipt(two_nights, "u3", "bank", 1000, "2026-01-07")
+    ledger.add_receipt(two_nights, "u4", "cash", 1000, "2026-01-07")  # cash never reaches the bank
+    assert bank.expected(two_nights, "2026-01-08")["expected"] == 1000
+    bank.reconcile(two_nights, "2026-01-08", 1000, "")
+    with pytest.raises(RuleError, match="Locked"):
+        ledger.delete_receipt(two_nights, rid)
+
+
+def test_payouts_count_on_the_day_they_were_sent(two_nights, monkeypatch):
+    monkeypatch.setattr(bank, "today", lambda: "2026-01-20")
+    bank.reconcile(two_nights, "2026-01-05", 0, "")
+    [po] = [r[0] for r in two_nights.execute("SELECT id FROM payout WHERE event_id='e1' ORDER BY id LIMIT 1")]
+    with pytest.raises(RuleError, match="locked"):
+        bank.mark_paid(two_nights, "payout", po, "2026-01-04")
+    with pytest.raises(RuleError, match="hasn't happened"):
+        bank.mark_paid(two_nights, "payout", po, "2026-01-21")
+    bank.mark_paid(two_nights, "payout", po, "2026-01-12")  # marked today, sent on the 12th
+    assert [r["day"] for r in bank.movements(two_nights)["players"]] == ["2026-01-12"]
+    assert bank.expected(two_nights, "2026-01-11")["out"] == 0
+    bank.mark_owed(two_nights, "payout", po)
+    assert two_nights.execute("SELECT status, paid_on FROM payout WHERE id=?", (po,)).fetchone()[:] == ("owed", None)
+
+
+def test_differences_from_before_adjustments_become_unexplained_ones(two_nights):
+    two_nights.execute("""INSERT INTO reconciliation (reconciled_on, balance_cents, expected_cents, note, created_at)
+                          VALUES ('2026-01-05', 5376, 5000, 'not sure', '')""")
+    bank.migrate_differences(two_nights)
+    bank.migrate_differences(two_nights)  # once per reconciliation
+    rows = [tuple(r) for r in two_nights.execute("SELECT occurred_on, amount_cents, category, note FROM bank_adjustment")]
+    assert rows == [("2026-01-05", 376, "unexplained", "not sure")]
+    assert bank.expected(two_nights, "2026-01-06")["expected"] == 5376  # nothing changes going forward

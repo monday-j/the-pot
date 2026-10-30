@@ -18,6 +18,6 @@
 <table class="sortable"><thead><tr><th class="r">Place</th><th>Player</th><th class="r">Payout</th><th>Status</th><th></th></tr></thead><tbody>
 {% for r in rows %}<tr>{{ m.ptd(r.placement) }}<td>{{ m.player(r.player_id, r.gamer_tag) }}</td>
 <td class="r" data-v="{{ r.amount_cents or 0 }}">{% if r.payout_id %}{{ r.amount_cents|money }}{{ m.discrepancy(r.amount_cents, r.computed_cents) }}{% else %}<span class="mut">·</span>{% endif %}</td>
-<td>{{ m.status(r.status, r.paid_at) }}</td><td>{{ m.paybtn(r.payout_id, r.status, here) }}</td></tr>
+<td>{{ m.status(r.status, r.paid_at, r.paid_on) }}</td><td>{{ m.paybtn(r.payout_id, r.status, here) }}</td></tr>
 {% else %}<tr><td colspan="5" class="mut">No entrants.</td></tr>{% endfor %}</tbody></table>
 {% endblock %}

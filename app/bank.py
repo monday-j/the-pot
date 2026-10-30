@@ -1,9 +1,11 @@
 """Bank reconciliation: the bank balance, entered by hand, against what the app expects it to be (#27).
 
-Money in is the deposits: Square's payouts (imported, each with Square's own list of the payments, refunds and fees it
-covered) and any recorded by hand. Money out is the payouts to players and venues marked paid. The expected balance
-is the last reconciliation's balance plus what came in and minus what went out since; the first reconciliation is
-the opening balance. A balance that doesn't match is recorded with its difference and a note, as entered.
+Money in is the deposits (Square's payouts, imported, each with Square's own list of the payments, refunds and fees it
+covered, and any recorded by hand) and players' bank transfers (ledger receipts). Money out is the payouts to players
+and venues marked paid, on the day they were sent. Anything else through the account is a bank adjustment, with a
+category saying what it was (#39). The expected balance is the last reconciliation's balance plus what came in and
+minus what went out since; the first reconciliation is the opening balance. A balance that doesn't match has to be
+explained with adjustments before it's locked, or locked anyway, which files the rest as "unexplained" with a note.
 
 Each reconciliation takes in every movement dated on or before its date that no earlier one took in, and locks it:
 what's taken in can't be changed until the reconciliation is undone (only the latest can be, one at a time). Tournaments
@@ -14,6 +16,11 @@ from zoneinfo import ZoneInfo
 
 from . import config
 from .payouts import RuleError
+
+# What money through the bank that nothing else records was (#39).
+CATEGORIES = {"cash_deposit": "cash deposited", "bank_fee": "bank fee", "interest": "interest",
+              "owner_in": "my own money in", "owner_out": "my own money out", "refund_to_player": "refund to a player",
+              "other_income": "other income", "other_expense": "other expense", "unexplained": "unexplained"}
 
 
 def local_day(stamp: str) -> str:
@@ -51,23 +58,35 @@ def movements(conn, upto: str | None = None) -> dict:
     deposits = [dict(r) for r in conn.execute(
         """SELECT * FROM bank_deposit WHERE reconciliation_id IS NULL AND payout_status != 'FAILED'
            AND (? IS NULL OR deposited_on <= ?) ORDER BY deposited_on, id""", (upto, upto))]
-    players = [{**dict(r), "day": local_day(r["paid_at"])} for r in conn.execute(
-        """SELECT po.id, po.amount_cents, po.paid_at, po.note, po.player_id, p.gamer_tag, e.name AS ename,
+    receipts = [dict(r) for r in conn.execute(
+        """SELECT r.*, p.gamer_tag FROM receipt r LEFT JOIN player p ON p.id=r.player_id
+           WHERE r.method='bank' AND r.reconciliation_id IS NULL AND (? IS NULL OR r.received_on <= ?)
+           ORDER BY r.received_on, r.id""", (upto, upto))]
+    adjustments = [dict(r) for r in conn.execute(
+        """SELECT * FROM bank_adjustment WHERE reconciliation_id IS NULL AND (? IS NULL OR occurred_on <= ?)
+           ORDER BY occurred_on, id""", (upto, upto))]
+    paid_day = lambda r: r["paid_on"] or local_day(r["paid_at"])
+    players = [{**dict(r), "day": paid_day(r)} for r in conn.execute(
+        """SELECT po.id, po.amount_cents, po.paid_at, po.paid_on, po.note, po.player_id, p.gamer_tag, e.name AS ename,
                   t.id AS tournament_id, t.name AS tname
            FROM payout po JOIN player p ON p.id=po.player_id JOIN event e ON e.id=po.event_id
            JOIN tournament t ON t.id=e.tournament_id
            WHERE po.status='paid' AND po.reconciliation_id IS NULL ORDER BY po.paid_at""")]
-    venues = [{**dict(r), "day": local_day(r["paid_at"])} for r in conn.execute(
-        """SELECT vp.tournament_id, vp.amount_cents, vp.paid_at, vp.note, vp.venue_id,
+    venues = [{**dict(r), "day": paid_day(r)} for r in conn.execute(
+        """SELECT vp.tournament_id, vp.amount_cents, vp.paid_at, vp.paid_on, vp.note, vp.venue_id,
                   COALESCE(v.name, '(no venue)') AS venue_name, t.name AS tname
            FROM venue_payment vp JOIN tournament t ON t.id=vp.tournament_id LEFT JOIN venue v ON v.id=vp.venue_id
            WHERE vp.status='paid' AND vp.reconciliation_id IS NULL ORDER BY vp.paid_at""")]
     if upto:
         players = [r for r in players if r["day"] <= upto]
         venues = [r for r in venues if r["day"] <= upto]
-    money_in = sum(d["amount_cents"] for d in deposits)
-    money_out = sum(r["amount_cents"] for r in players) + sum(r["amount_cents"] for r in venues)
-    return {"deposits": deposits, "players": players, "venues": venues, "in": money_in, "out": money_out}
+    money_in = (sum(d["amount_cents"] for d in deposits) + sum(r["amount_cents"] for r in receipts)
+                + sum(a["amount_cents"] for a in adjustments if a["amount_cents"] > 0))
+    money_out = (sum(r["amount_cents"] for r in players) + sum(r["amount_cents"] for r in venues)
+                 - sum(a["amount_cents"] for a in adjustments if a["amount_cents"] < 0))
+    return {"deposits": deposits, "receipts": receipts, "adjustments": adjustments, "players": players,
+            "venues": venues, "in": money_in, "out": money_out,
+            "adjusted": sum(a["amount_cents"] for a in adjustments)}
 
 
 def expected(conn, day: str) -> dict:
@@ -79,19 +98,40 @@ def expected(conn, day: str) -> dict:
             "expected": None if last is None else last["balance_cents"] + moved["in"] - moved["out"]}
 
 
-def reconcile(conn, day: str, balance_cents: int, note: str) -> int:
-    """Record the bank balance on `day` and lock everything up to it. A balance that doesn't match is recorded as is."""
+def _stamp() -> str:
+    return datetime.now(ZoneInfo("UTC")).isoformat(timespec="seconds")
+
+
+def reconcile(conn, day: str, balance_cents: int, note: str, anyway: bool = False) -> int:
+    """Record the bank balance on `day` and lock everything up to it.
+
+    The balance has to match what's expected, adjustments included: explain any difference first (add_adjustment).
+    With `anyway`, the difference left is filed as an "unexplained" adjustment, which needs a note saying so. The
+    reconciliation keeps the balance expected before adjustments, so its difference is what they explained."""
     last = latest(conn)
     if last and day <= last["reconciled_on"]:
         raise RuleError(f"Reconcile after {last['reconciled_on']}, the latest reconciliation (or undo it)")
     if day > today():
         raise RuleError("You can't reconcile a day that hasn't happened yet")
     e = expected(conn, day)
+    left = 0 if e["expected"] is None else balance_cents - e["expected"]
+    if left and not anyway:
+        raise RuleError(f"The balance is {abs(left) / 100:,.2f} {'more' if left > 0 else 'less'} than expected: "
+                        "explain the difference first, or lock it anyway with a note")
+    if left:
+        if not note.strip():
+            raise RuleError("Say why you're locking it with the difference unexplained")
+        conn.execute("""INSERT INTO bank_adjustment (occurred_on, amount_cents, category, note, created_at)
+                        VALUES (?,?,?,?,?)""", (day, left, "unexplained", note.strip(), _stamp()))
+        e = expected(conn, day)
     rid = conn.execute("""INSERT INTO reconciliation (reconciled_on, balance_cents, expected_cents, note, created_at)
                           VALUES (?,?,?,?,?)""",
-                       (day, balance_cents, balance_cents if e["expected"] is None else e["expected"], note.strip(),
-                        datetime.now(ZoneInfo("UTC")).isoformat(timespec="seconds"))).lastrowid
+                       (day, balance_cents, balance_cents if e["expected"] is None else e["expected"] - e["adjusted"],
+                        note.strip(), _stamp())).lastrowid
     conn.executemany("UPDATE bank_deposit SET reconciliation_id=? WHERE id=?", [(rid, d["id"]) for d in e["deposits"]])
+    conn.executemany("UPDATE receipt SET reconciliation_id=? WHERE id=?", [(rid, r["id"]) for r in e["receipts"]])
+    conn.executemany("UPDATE bank_adjustment SET reconciliation_id=? WHERE id=?",
+                     [(rid, a["id"]) for a in e["adjustments"]])
     conn.executemany("UPDATE payout SET reconciliation_id=? WHERE id=?", [(rid, r["id"]) for r in e["players"]])
     conn.executemany("UPDATE venue_payment SET reconciliation_id=? WHERE tournament_id=?",
                      [(rid, r["tournament_id"]) for r in e["venues"]])
@@ -106,6 +146,72 @@ def undo_latest(conn):
     conn.execute("DELETE FROM reconciliation WHERE id=?", (last["id"],))
 
 
+def add_adjustment(conn, day: str, cents: int, category: str, note: str = "") -> int:
+    """Record money in (+) or out (-) of the bank that nothing else records, with what it was."""
+    if category not in CATEGORIES:
+        raise RuleError("Choose what it was")
+    if not cents:
+        raise RuleError("Enter an amount other than $0")
+    if category == "unexplained" and not note.strip():
+        raise RuleError("Say what you know about it")
+    if day > today():
+        raise RuleError("That day hasn't happened yet")
+    check_open(conn, day)
+    return conn.execute("""INSERT INTO bank_adjustment (occurred_on, amount_cents, category, note, created_at)
+                           VALUES (?,?,?,?,?)""", (day, cents, category, note.strip(), _stamp())).lastrowid
+
+
+def update_adjustment(conn, adjustment_id: int, category: str, note: str):
+    """Say what an adjustment was, e.g. once an unexplained one is understood: allowed even once it's locked, since
+    the amount and date can't change."""
+    if category not in CATEGORIES:
+        raise RuleError("Choose what it was")
+    if not conn.execute("SELECT 1 FROM bank_adjustment WHERE id=?", (adjustment_id,)).fetchone():
+        raise RuleError("Unknown adjustment")
+    conn.execute("UPDATE bank_adjustment SET category=?, note=? WHERE id=?", (category, note.strip(), adjustment_id))
+
+
+def delete_adjustment(conn, adjustment_id: int):
+    a = conn.execute("SELECT * FROM bank_adjustment WHERE id=?", (adjustment_id,)).fetchone()
+    if a is None:
+        raise RuleError("Unknown adjustment")
+    if a["reconciliation_id"] is not None:
+        raise RuleError(locked_message(conn, a["reconciliation_id"]))
+    conn.execute("DELETE FROM bank_adjustment WHERE id=?", (adjustment_id,))
+
+
+PAYABLES = {"payout": "id", "venue_payment": "tournament_id"}
+
+
+def mark_paid(conn, table: str, key, day: str, note: str = ""):
+    """Mark a payout or a venue payment paid, sent on `day` (#39): that's the day it leaves the bank."""
+    if day > today():
+        raise RuleError("That day hasn't happened yet")
+    check_open(conn, day)
+    conn.execute(f"UPDATE {table} SET status='paid', paid_at=?, paid_on=?, note=? WHERE {PAYABLES[table]}=?",
+                 (_stamp(), day, note.strip(), key))
+
+
+def mark_owed(conn, table: str, key):
+    """Undo marking it paid, unless a reconciliation has taken it in."""
+    row = conn.execute(f"SELECT reconciliation_id FROM {table} WHERE {PAYABLES[table]}=?", (key,)).fetchone()
+    if row and row[0]:
+        raise RuleError(locked_message(conn, row[0]))
+    conn.execute(f"""UPDATE {table} SET status='owed', paid_at=NULL, paid_on=NULL, amount_cents=computed_cents
+                     WHERE {PAYABLES[table]}=?""", (key,))
+
+
+def migrate_differences(conn):
+    """Differences recorded before #39 (a reconciliation whose balance didn't match, with its note) become
+    "unexplained" adjustments it already took in, so they can be explained later. Expected balances don't change."""
+    for r in conn.execute("""SELECT * FROM reconciliation r WHERE balance_cents != expected_cents
+                             AND NOT EXISTS (SELECT 1 FROM bank_adjustment WHERE reconciliation_id=r.id)""").fetchall():
+        conn.execute("""INSERT INTO bank_adjustment (occurred_on, amount_cents, category, note, created_at,
+                        reconciliation_id) VALUES (?,?,?,?,?,?)""",
+                     (r["reconciled_on"], r["balance_cents"] - r["expected_cents"], "unexplained", r["note"],
+                      _stamp(), r["id"]))
+
+
 def history(conn) -> list[dict]:
     """Every reconciliation, latest first, with its difference and what it took in."""
     out = []
@@ -113,7 +219,10 @@ def history(conn) -> list[dict]:
             (SELECT COUNT(*) FROM tournament WHERE locked_by=r.id) AS tournaments,
             (SELECT COUNT(*) FROM bank_deposit WHERE reconciliation_id=r.id) AS deposits,
             (SELECT COUNT(*) FROM payout WHERE reconciliation_id=r.id)
-              + (SELECT COUNT(*) FROM venue_payment WHERE reconciliation_id=r.id) AS paid_out
+              + (SELECT COUNT(*) FROM venue_payment WHERE reconciliation_id=r.id) AS paid_out,
+            (SELECT COUNT(*) FROM bank_adjustment WHERE reconciliation_id=r.id) AS adjustments,
+            (SELECT COALESCE(SUM(amount_cents), 0) FROM bank_adjustment
+             WHERE reconciliation_id=r.id AND category='unexplained') AS unexplained
             FROM reconciliation r ORDER BY r.reconciled_on DESC, r.id DESC""").fetchall():
         out.append({**dict(r), "difference": r["balance_cents"] - r["expected_cents"]})
     return out

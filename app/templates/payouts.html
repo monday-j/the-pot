@@ -9,6 +9,6 @@
 <div class="tw"><table class="sortable"><thead><tr><th>Date</th><th>Player</th><th>Tournament</th><th>Event</th><th>Game</th><th class="r">Place</th><th class="r">Amount</th><th>Status</th><th>Note</th><th></th></tr></thead><tbody>
 {% for r in rows %}<tr><td>{{ r.start_date }}</td><td>{{ m.player(r.player_id, r.gamer_tag) }}</td><td>{{ m.tournament(r.tid, r.tname) }}</td><td>{{ m.event(r.eid, r.ename) }}</td><td>{{ m.game(r.game_name) }}</td>
 {{ m.ptd(r.placement) }}<td class="r" data-v="{{ r.amount_cents }}">{{ r.amount_cents|money }}{{ m.discrepancy(r.amount_cents, r.computed_cents) }}</td>
-<td>{{ m.status(r.status, r.paid_at) }}</td><td class="mut">{{ r.note }}</td><td>{{ m.paybtn(r.id, r.status, here) }}</td></tr>
+<td>{{ m.status(r.status, r.paid_at, r.paid_on) }}</td><td class="mut">{{ r.note }}</td><td>{{ m.paybtn(r.id, r.status, here) }}</td></tr>
 {% else %}<tr><td colspan="10" class="mut">No payouts match.</td></tr>{% endfor %}</tbody></table></div>
 {% endblock %}

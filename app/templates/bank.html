@@ -10,20 +10,31 @@
 <span class="mut">Counts deposits and payments out up to this day{% if last %} since {{ last.reconciled_on }}{% endif %}.</span></form>
 <form method="post" action="/bank/reconcile" class="toolbar"><input type="hidden" name="reconciled_on" value="{{ day }}">
 <label>Bank balance at the end of {{ day }} $<input name="balance" size="10" required></label>
-<label>Note (say why, if it doesn't match)<input name="note" size="30"></label><button>Reconcile and lock {{ day }}</button>
-<span class="mut">{% if x.expected is none %}The opening balance: nothing to compare yet.{% else %}Expected {{ x.expected|money }}; a different balance is recorded with its difference.{% endif %}</span></form>
+<label>Note<input name="note" size="30"></label><button>Reconcile and lock {{ day }}</button>
+<label class="inline"><input type="checkbox" name="anyway" value="1"> lock anyway, the difference unexplained (say why in the note)</label>
+<span class="mut">{% if x.expected is none %}The opening balance: nothing to compare yet.{% else %}Expected {{ x.expected|money }}. If the bank says otherwise, explain the difference below first.{% endif %}</span></form>
+<h2 id="adjust">Explain a difference</h2>
+<form method="post" action="/bank/adjustments" class="toolbar">
+<label>On<input type="date" name="occurred_on" value="{{ day }}" max="{{ today }}" required></label>
+<label>Amount $<input name="amount" size="9" required></label>
+<label>Direction<select name="direction"><option value="in">into the account</option><option value="out">out of the account</option></select></label>
+<label>What it was<select name="category">{% for k, label in categories.items() %}<option value="{{ k }}">{{ label }}</option>{% endfor %}</select></label>
+<label>Note<input name="note" size="24"></label><button class="sec">Add</button>
+<span class="mut">Money through the account that the app doesn't otherwise know about. A player's bank transfer for what they owe goes on their tournament's "Who paid" instead.</span></form>
 <p class="help">Reconciling locks everything dated on or before the day: deposits, payments to players and venues, and every tournament up to then that has no issues left (the rest lock as soon as they're sorted out). Locked tournaments are no longer re-imported or recomputed. Undo the latest reconciliation to change anything it locked.</p>
-<h2>Not reconciled yet, up to {{ day }} <span class="n">· {{ x.deposits|length + x.players|length + x.venues|length }}</span></h2>
+<h2>Not reconciled yet, up to {{ day }} <span class="n">· {{ x.deposits|length + x.receipts|length + x.adjustments|length + x.players|length + x.venues|length }}</span></h2>
 <table class="sortable"><thead><tr><th>Date</th><th>What</th><th>Who</th><th class="r">In</th><th class="r">Out</th><th>Note</th></tr></thead><tbody>
 {% for d in x.deposits %}<tr><td>{{ d.deposited_on }}</td><td><a href="/bank/{{ d.id }}">{{ "Square payout" if d.square_payout_id else "Deposit" }}</a>{% if d.reference and d.reference != "Square payout" %} <span class="mut">{{ d.reference }}</span>{% endif %}</td><td></td>{{ m.mtd(d.amount_cents) }}<td></td><td class="mut">{{ d.note }}</td></tr>{% endfor %}
+{% for r in x.receipts %}<tr><td>{{ r.received_on }}</td><td>Bank transfer from a player{% if r.reference %} <span class="mut">{{ r.reference }}</span>{% endif %}</td><td>{{ m.player(r.player_id, r.gamer_tag) }}</td>{{ m.mtd(r.amount_cents) }}<td></td><td class="mut">{{ r.note }}</td></tr>{% endfor %}
+{% for a in x.adjustments %}<tr><td>{{ a.occurred_on }}</td><td>{{ categories[a.category] }} <form class="inline" method="post" action="/bank/adjustments/{{ a.id }}/delete"><button class="sec">Delete</button></form></td><td></td>{% if a.amount_cents > 0 %}{{ m.mtd(a.amount_cents) }}<td></td>{% else %}<td></td>{{ m.mtd(-a.amount_cents) }}{% endif %}<td class="mut">{{ a.note }}</td></tr>{% endfor %}
 {% for r in x.players %}<tr><td>{{ r.day }}</td><td>Payout · {{ m.tournament(r.tournament_id, r.tname) }} {{ r.ename }}</td><td>{{ m.player(r.player_id, r.gamer_tag) }}</td><td></td>{{ m.mtd(r.amount_cents) }}<td class="mut">{{ r.note }}</td></tr>{% endfor %}
 {% for r in x.venues %}<tr><td>{{ r.day }}</td><td>Venue · {{ m.tournament(r.tournament_id, r.tname) }}</td><td>{% if r.venue_id %}{{ m.venue(r.venue_id, r.venue_name) }}{% else %}{{ r.venue_name }}{% endif %}</td><td></td>{{ m.mtd(r.amount_cents) }}<td class="mut">{{ r.note }}</td></tr>{% endfor %}
-{% if not (x.deposits or x.players or x.venues) %}<tr><td colspan="6" class="mut">Nothing in or out{% if last %} since {{ last.reconciled_on }}{% endif %}.</td></tr>{% endif %}</tbody></table>
+{% if not (x.deposits or x.receipts or x.adjustments or x.players or x.venues) %}<tr><td colspan="6" class="mut">Nothing in or out{% if last %} since {{ last.reconciled_on }}{% endif %}.</td></tr>{% endif %}</tbody></table>
 {% if later %}<p class="help">{{ later }} deposit{{ "s" if later != 1 }} after {{ day }} not shown.</p>{% endif %}
 <h2>Reconciliations <span class="n">· {{ history|length }}</span></h2>
-<table><thead><tr><th>Date</th><th class="r">Expected</th><th class="r">Bank balance</th><th class="r">Difference</th><th class="r">Locked</th><th>Note</th><th></th></tr></thead><tbody>
-{% for r in history %}<tr><td>{{ r.reconciled_on }}</td>{{ m.mtd(r.expected_cents) }}{{ m.mtd(r.balance_cents) }}<td class="r {{ 'ok' if r.difference == 0 else 'bad' }}">{{ r.difference|money }}</td>
-<td class="r">{{ r.deposits }} deposits, {{ r.paid_out }} paid out, {{ r.tournaments }} tournaments</td><td class="mut">{{ r.note }}{% if loop.last %} (opening balance){% endif %}</td>
+<table><thead><tr><th>Date</th><th class="r">Expected</th><th class="r">Bank balance</th><th class="r" title="What adjustments explained">Difference</th><th class="r">Locked</th><th>Note</th><th></th></tr></thead><tbody>
+{% for r in history %}<tr><td>{{ r.reconciled_on }}</td>{{ m.mtd(r.expected_cents) }}{{ m.mtd(r.balance_cents) }}<td class="r {{ 'warn' if r.unexplained else 'ok' if r.difference == 0 }}">{{ r.difference|money }}</td>
+<td class="r">{{ r.deposits }} deposits, {{ r.paid_out }} paid out, {{ r.tournaments }} tournaments{% if r.adjustments %}, {{ r.adjustments }} explained{% endif %}{% if r.unexplained %} <span class="warn">({{ r.unexplained|money }} unexplained)</span>{% endif %}</td><td class="mut">{{ r.note }}{% if loop.last %} (opening balance){% endif %}</td>
 <td>{% if loop.first %}<form class="inline" method="post" action="/bank/reconcile/undo"><button class="sec">Undo</button></form>{% endif %}</td></tr>
 {% else %}<tr><td colspan="7" class="mut">No reconciliations yet.</td></tr>{% endfor %}</tbody></table>
 <h2>Deposits</h2>

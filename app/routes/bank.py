@@ -29,15 +29,16 @@ def bank_page(request: Request, on: str = ""):
         later = sum(1 for _ in conn.execute("SELECT 1 FROM bank_deposit WHERE reconciliation_id IS NULL AND deposited_on > ?",
                                             (day,)))
     return render(request, "bank.html", last=last, day=day, x=expected, history=history, deposits=deposits,
-                  later=later, today=today, import_since=(date.fromisoformat(today) - timedelta(days=30)).isoformat(),
+                  later=later, today=today, categories=bank.CATEGORIES, import_since=(date.fromisoformat(today) - timedelta(days=30)).isoformat(),
                   square_setup=square_setup(), payouts_status=square.status.get("payouts"))
 
 
 @router.post("/bank/reconcile")
-def bank_reconcile(reconciled_on: str = Form(...), balance: str = Form(...), note: str = Form("")):
+def bank_reconcile(reconciled_on: str = Form(...), balance: str = Form(...), note: str = Form(""),
+                   anyway: str = Form("")):
     try:
         with db.session() as conn:
-            bank.reconcile(conn, parse_date(reconciled_on), dollars_to_cents(balance), note)
+            bank.reconcile(conn, parse_date(reconciled_on), dollars_to_cents(balance), note, anyway=bool(anyway))
             square.lock_clear_tournaments(conn)
     except RuleError as e:
         return back(f"/bank?on={quote(reconciled_on)}", str(e))
@@ -49,6 +50,39 @@ def bank_undo():
     try:
         with db.session() as conn:
             bank.undo_latest(conn)
+    except RuleError as e:
+        return back("/bank", str(e))
+    return back("/bank")
+
+
+@router.post("/bank/adjustments")
+def add_adjustment(occurred_on: str = Form(...), amount: str = Form(...), direction: str = Form("in"),
+                   category: str = Form(...), note: str = Form("")):
+    """Money in or out of the bank that nothing else records (#39)."""
+    try:
+        cents = abs(dollars_to_cents(amount)) * (-1 if direction == "out" else 1)
+        with db.session() as conn:
+            bank.add_adjustment(conn, parse_date(occurred_on), cents, category, note)
+    except RuleError as e:
+        return back(f"/bank?on={quote(occurred_on)}#adjust", str(e))
+    return back(f"/bank?on={quote(occurred_on)}")
+
+
+@router.post("/bank/adjustments/{adjustment_id}")
+def update_adjustment(adjustment_id: int, category: str = Form(...), note: str = Form("")):
+    try:
+        with db.session() as conn:
+            bank.update_adjustment(conn, adjustment_id, category, note)
+    except RuleError as e:
+        return back("/bank", str(e))
+    return back("/bank")
+
+
+@router.post("/bank/adjustments/{adjustment_id}/delete")
+def delete_adjustment(adjustment_id: int):
+    try:
+        with db.session() as conn:
+            bank.delete_adjustment(conn, adjustment_id)
     except RuleError as e:
         return back("/bank", str(e))
     return back("/bank")

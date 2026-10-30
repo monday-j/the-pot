@@ -7,7 +7,8 @@ from fastapi.responses import RedirectResponse
 
 from .. import bank, db, sync
 from ..payouts import RuleError, compute_payouts, pool_breakdown
-from ..web import EVENT_SUMS, SERIES_SUMS, TOURNAMENT_SUMS, back, one, parse_venue, render, safe_next, venue_options
+from ..web import (EVENT_SUMS, SERIES_SUMS, TOURNAMENT_SUMS, back, one, parse_date, parse_venue, render, safe_next,
+                   venue_options)
 
 router = APIRouter()
 
@@ -47,7 +48,7 @@ def event_page(request: Request, event_id: str):
         info = sync.event_pool(conn, event_id)
         issue = sync.event_issues(conn, event_id=event_id)
         rows = conn.execute("""SELECT p.id AS player_id, p.gamer_tag, ee.placement, po.id AS payout_id,
-                                      po.amount_cents, po.computed_cents, po.status, po.paid_at
+                                      po.amount_cents, po.computed_cents, po.status, po.paid_at, po.paid_on
                                FROM event_entry_c ee JOIN player p ON p.id=ee.player_id
                                LEFT JOIN payout po ON po.event_id=ee.event_id AND po.player_id=ee.player_id
                                WHERE ee.event_id=?
@@ -169,7 +170,7 @@ def player_page(request: Request, player_id: str):
                                  ORDER BY gamer_tag COLLATE NOCASE""", (player_id,)).fetchall()
         history = conn.execute("""SELECT t.id AS tid, t.name AS tname, t.start_date, t.series_id, s.name AS sname, s.code AS scode,
                                          e.id AS eid, e.name AS ename, e.game_name, ee.placement,
-                                         po.id AS payout_id, po.amount_cents, po.computed_cents, po.status, po.paid_at
+                                         po.id AS payout_id, po.amount_cents, po.computed_cents, po.status, po.paid_at, po.paid_on
                                   FROM event_entry_c ee JOIN event e ON e.id=ee.event_id
                                   JOIN tournament t ON t.id=e.tournament_id LEFT JOIN series s ON s.id=t.series_id
                                   LEFT JOIN payout po ON po.event_id=e.id AND po.player_id=ee.player_id
@@ -218,28 +219,39 @@ def unmerge_player(player_id: str):
     return back(f"/players/{quote(keep_id, safe='')}")
 
 
+def paid_day(text: str) -> str:
+    """The day money was sent, from a form (#39): today if blank."""
+    return parse_date(text) if text.strip() else bank.today()
+
+
 @router.post("/payouts/{payout_id}/paid")
-def mark_paid(payout_id: int, note: str = Form(""), undo: str = Form(""), next: str = Form("")):
+def mark_paid(payout_id: int, note: str = Form(""), undo: str = Form(""), next: str = Form(""),
+              paid_on: str = Form("")):
     with db.session() as conn:
         po = one(conn, "SELECT * FROM payout WHERE id=?", payout_id)
-        if undo and po["reconciliation_id"]:
-            return back(safe_next(next, f"/players/{po['player_id']}"), bank.locked_message(conn, po["reconciliation_id"]))
-        if undo:
-            conn.execute("UPDATE payout SET status='owed', paid_at=NULL, amount_cents=computed_cents WHERE id=?",
-                         (payout_id,))
-        else:
-            conn.execute("UPDATE payout SET status='paid', paid_at=?, note=? WHERE id=?",
-                         (sync.now(), note.strip(), payout_id))
-    return back(safe_next(next, f"/players/{po['player_id']}"))
+        to = safe_next(next, f"/players/{po['player_id']}")
+        try:
+            if undo:
+                bank.mark_owed(conn, "payout", payout_id)
+            else:
+                bank.mark_paid(conn, "payout", payout_id, paid_day(paid_on), note)
+        except RuleError as e:
+            return back(to, str(e))
+    return back(to)
 
 
 @router.post("/players/{player_id}/settle")
-def settle_all(player_id: str, note: str = Form(""), next: str = Form("")):
+def settle_all(player_id: str, note: str = Form(""), next: str = Form(""), paid_on: str = Form("")):
+    to = safe_next(next, f"/players/{player_id}")
     with db.session() as conn:
         one(conn, "SELECT id FROM player WHERE id=?", player_id)
-        conn.execute("UPDATE payout SET status='paid', paid_at=?, note=? WHERE player_id=? AND status='owed'",
-                     (sync.now(), note.strip(), player_id))
-    return back(safe_next(next, f"/players/{player_id}"))
+        try:
+            day = paid_day(paid_on)
+            for r in conn.execute("SELECT id FROM payout WHERE player_id=? AND status='owed'", (player_id,)).fetchall():
+                bank.mark_paid(conn, "payout", r["id"], day, note)
+        except RuleError as e:
+            return back(to, str(e))
+    return back(to)
 
 
 VENUE_SUMS = """(SELECT COUNT(DISTINCT series_id) FROM series_period WHERE venue_id=v.id) AS series,
@@ -345,15 +357,16 @@ def venue_page(request: Request, status: str = "", series: int | None = None, ve
 
 
 @router.post("/venue/{tournament_id}/paid")
-def venue_mark_paid(tournament_id: str, note: str = Form(""), undo: str = Form(""), next: str = Form("")):
+def venue_mark_paid(tournament_id: str, note: str = Form(""), undo: str = Form(""), next: str = Form(""),
+                    paid_on: str = Form("")):
+    to = safe_next(next, f"/tournaments/{tournament_id}")
     with db.session() as conn:
-        vp = one(conn, "SELECT * FROM venue_payment WHERE tournament_id=?", tournament_id)
-        if undo and vp["reconciliation_id"]:
-            return back(safe_next(next, f"/tournaments/{tournament_id}"), bank.locked_message(conn, vp["reconciliation_id"]))
-        if undo:
-            conn.execute("""UPDATE venue_payment SET status='owed', paid_at=NULL, amount_cents=computed_cents
-                            WHERE tournament_id=?""", (tournament_id,))
-        else:
-            conn.execute("UPDATE venue_payment SET status='paid', paid_at=?, note=? WHERE tournament_id=?",
-                         (sync.now(), note.strip(), tournament_id))
-    return back(safe_next(next, f"/tournaments/{tournament_id}"))
+        one(conn, "SELECT * FROM venue_payment WHERE tournament_id=?", tournament_id)
+        try:
+            if undo:
+                bank.mark_owed(conn, "venue_payment", tournament_id)
+            else:
+                bank.mark_paid(conn, "venue_payment", tournament_id, paid_day(paid_on), note)
+        except RuleError as e:
+            return back(to, str(e))
+    return back(to)

@@ -115,6 +115,7 @@ CREATE TABLE IF NOT EXISTS payout (
     paid_at TEXT,
     note TEXT NOT NULL DEFAULT '',
     reconciliation_id INTEGER REFERENCES reconciliation(id) ON DELETE SET NULL,
+    paid_on TEXT,  -- the day the money was sent (#39); paid_at is when it was marked paid
     UNIQUE (event_id, player_id)
 );
 CREATE TABLE IF NOT EXISTS venue_payment (
@@ -125,7 +126,8 @@ CREATE TABLE IF NOT EXISTS venue_payment (
     status TEXT NOT NULL DEFAULT 'owed',
     paid_at TEXT,
     note TEXT NOT NULL DEFAULT '',
-    reconciliation_id INTEGER REFERENCES reconciliation(id) ON DELETE SET NULL
+    reconciliation_id INTEGER REFERENCES reconciliation(id) ON DELETE SET NULL,
+    paid_on TEXT  -- the day the money was sent (#39); paid_at is when it was marked paid
 );
 -- The bank balance on a day, entered by hand, against the balance the app expected (see bank.py). Deposits and
 -- payouts it took in (their reconciliation_id) and tournaments it locked (locked_by) are unlocked when it's deleted.
@@ -149,6 +151,18 @@ CREATE TABLE IF NOT EXISTS bank_deposit (
     payout_status TEXT NOT NULL DEFAULT '',
     payout_version INTEGER,
     seen_in_bank INTEGER NOT NULL DEFAULT 1,
+    reconciliation_id INTEGER REFERENCES reconciliation(id) ON DELETE SET NULL
+);
+-- Money in or out of the bank that nothing else records (#39), each with a category saying what it was (bank.CATEGORIES):
+-- signed, + into the account. Counted in the expected balance; a reconciliation takes it in and locks it like a deposit.
+-- 'unexplained' is what was locked anyway without an explanation, or a difference recorded before #39.
+CREATE TABLE IF NOT EXISTS bank_adjustment (
+    id INTEGER PRIMARY KEY,
+    occurred_on TEXT NOT NULL,
+    amount_cents INTEGER NOT NULL CHECK (amount_cents != 0),
+    category TEXT NOT NULL,
+    note TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
     reconciliation_id INTEGER REFERENCES reconciliation(id) ON DELETE SET NULL
 );
 -- What an imported payout covered, as Square itemises it: CHARGE (a payment), REFUND, FEE, etc.
@@ -367,9 +381,11 @@ ADDED_COLUMNS = {
     "venue_payment": {
         "venue_id": "INTEGER REFERENCES venue(id) ON DELETE SET NULL",
         "reconciliation_id": "INTEGER REFERENCES reconciliation(id) ON DELETE SET NULL",
+        "paid_on": "TEXT",
     },
     "payout": {
         "reconciliation_id": "INTEGER REFERENCES reconciliation(id) ON DELETE SET NULL",
+        "paid_on": "TEXT",
     },
 }
 
@@ -452,5 +468,6 @@ def init():
         _backfill_series_codes(conn)
         _migrate_venues(conn)
         _migrate_periods(conn)
-        from . import ledger  # it reads through square and sync, which import this module
+        from . import bank, ledger  # they read through square and sync, which import this module
         ledger.migrate(conn)
+        bank.migrate_differences(conn)

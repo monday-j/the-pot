@@ -14,7 +14,7 @@
 <div class="tw"><table class="sortable"><thead><tr><th>Date</th><th>Tournament</th><th>Series</th><th>Event</th><th>Game</th><th class="r">Place</th><th class="r">Payout</th><th>Status</th><th></th></tr></thead><tbody>
 {% for h in history %}<tr><td>{{ h.start_date }}</td><td>{{ m.tournament(h.tid, h.tname) }}</td><td>{{ m.series(h.series_id, h.sname, h.scode) }}</td><td>{{ m.event(h.eid, h.ename) }}</td><td>{{ m.game(h.game_name) }}</td>
 {{ m.ptd(h.placement) }}<td class="r" data-v="{{ h.amount_cents or 0 }}">{% if h.payout_id %}{{ h.amount_cents|money }}{{ m.discrepancy(h.amount_cents, h.computed_cents) }}{% else %}<span class="mut">·</span>{% endif %}</td>
-<td>{{ m.status(h.status, h.paid_at) }}</td><td>{{ m.paybtn(h.payout_id, h.status, here) }}</td></tr>
+<td>{{ m.status(h.status, h.paid_at, h.paid_on) }}</td><td>{{ m.paybtn(h.payout_id, h.status, here) }}</td></tr>
 {% else %}<tr><td colspan="9" class="mut">No events yet.</td></tr>{% endfor %}</tbody></table></div>
 {% if square_payments %}<h2>Square payments <span class="n">· {{ square_payments|length }}</span></h2>
 <table class="sortable"><thead><tr><th>Time</th><th>Tournament</th><th class="r">Amount</th><th>Card</th></tr></thead><tbody>

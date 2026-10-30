@@ -5,20 +5,34 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, Form, Request
 
-from .. import bank, db, square
+from .. import bank, db, ledger, square
 from ..payouts import RuleError
 from ..web import NO_SQUARE, back, dollars_to_cents, one, parse_date, render, square_client, square_setup
 
 router = APIRouter()
 
 
+def _check(text: str):
+    """The balance entered in step 1 of reconciling (#45), or None if there isn't a usable one."""
+    try:
+        return {"text": text.strip(), "cents": dollars_to_cents(text)} if text.strip() else None
+    except RuleError:
+        return None
+
+
+def _wizard(day: str, balance: str, anchor: str = "#explain") -> str:
+    """Back to the reconcile steps for this day and balance."""
+    return f"/bank?on={quote(day)}" + (f"&balance={quote(balance.strip())}" if balance.strip() else "") + anchor
+
+
 @router.get("/bank")
-def bank_page(request: Request, on: str = ""):
+def bank_page(request: Request, on: str = "", balance: str = ""):
     today = bank.today()
     try:
         day = parse_date(on) if on else today
     except RuleError:
         day = today
+    check = _check(balance)
     with db.session() as conn:
         last = bank.latest(conn)
         expected = bank.expected(conn, day)
@@ -26,9 +40,14 @@ def bank_page(request: Request, on: str = ""):
         deposits = conn.execute("""SELECT d.*, r.reconciled_on FROM bank_deposit d
                                    LEFT JOIN reconciliation r ON r.id=d.reconciliation_id
                                    ORDER BY d.deposited_on DESC, d.id DESC LIMIT 60""").fetchall()
+        players = conn.execute("""SELECT id, gamer_tag FROM player WHERE merged_into IS NULL
+                                  ORDER BY gamer_tag COLLATE NOCASE""").fetchall()
         later = sum(1 for _ in conn.execute("SELECT 1 FROM bank_deposit WHERE reconciliation_id IS NULL AND deposited_on > ?",
                                             (day,)))
+    if check:
+        check["diff"] = None if expected["expected"] is None else check["cents"] - expected["expected"]
     return render(request, "bank.html", last=last, day=day, x=expected, history=history, deposits=deposits,
+                  check=check, players=players,
                   later=later, today=today, categories=bank.CATEGORIES, import_since=(date.fromisoformat(today) - timedelta(days=30)).isoformat(),
                   square_setup=square_setup(), payouts_status=square.status.get("payouts"))
 
@@ -41,7 +60,7 @@ def bank_reconcile(reconciled_on: str = Form(...), balance: str = Form(...), not
             bank.reconcile(conn, parse_date(reconciled_on), dollars_to_cents(balance), note, anyway=bool(anyway))
             square.lock_clear_tournaments(conn)
     except RuleError as e:
-        return back(f"/bank?on={quote(reconciled_on)}", str(e))
+        return back(_wizard(reconciled_on, balance), str(e))
     return back("/bank")
 
 
@@ -57,15 +76,28 @@ def bank_undo():
 
 @router.post("/bank/adjustments")
 def add_adjustment(occurred_on: str = Form(...), amount: str = Form(...), direction: str = Form("in"),
-                   category: str = Form(...), note: str = Form("")):
-    """Money in or out of the bank that nothing else records (#39)."""
+                   category: str = Form(...), note: str = Form(""), player_id: str = Form(""),
+                   balance: str = Form("")):
+    """Explain money in or out of the bank that nothing else records (#39). A player's bank transfer is recorded as
+    their payment instead (#45), against what they owe."""
+    to = _wizard(occurred_on, balance)
     try:
         cents = abs(dollars_to_cents(amount)) * (-1 if direction == "out" else 1)
         with db.session() as conn:
-            bank.add_adjustment(conn, parse_date(occurred_on), cents, category, note)
+            day = parse_date(occurred_on)
+            if category == "player_transfer":
+                if not player_id:
+                    raise RuleError("Choose the player who paid")
+                if cents < 0:
+                    raise RuleError("A player's transfer comes into the account")
+                one(conn, "SELECT id FROM player WHERE id=?", player_id)
+                ledger.add_receipt(conn, player_id, "bank", cents, day, note=note)
+                square.lock_clear_tournaments(conn)
+            else:
+                bank.add_adjustment(conn, day, cents, category, note)
     except RuleError as e:
-        return back(f"/bank?on={quote(occurred_on)}#adjust", str(e))
-    return back(f"/bank?on={quote(occurred_on)}")
+        return back(to, str(e))
+    return back(to)
 
 
 @router.post("/bank/adjustments/{adjustment_id}")
@@ -79,13 +111,15 @@ def update_adjustment(adjustment_id: int, category: str = Form(...), note: str =
 
 
 @router.post("/bank/adjustments/{adjustment_id}/delete")
-def delete_adjustment(adjustment_id: int):
-    try:
-        with db.session() as conn:
+def delete_adjustment(adjustment_id: int, balance: str = Form("")):
+    with db.session() as conn:
+        a = one(conn, "SELECT * FROM bank_adjustment WHERE id=?", adjustment_id)
+        to = _wizard(a["occurred_on"], balance) if balance.strip() else "/bank"
+        try:
             bank.delete_adjustment(conn, adjustment_id)
-    except RuleError as e:
-        return back("/bank", str(e))
-    return back("/bank")
+        except RuleError as e:
+            return back(to, str(e))
+    return back(to)
 
 
 @router.post("/bank/square/pull")

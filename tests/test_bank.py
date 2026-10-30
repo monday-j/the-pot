@@ -1,7 +1,7 @@
 import pytest
 from dataclasses import replace
 
-from app import bank, config, ledger, square, sync
+from app import bank, config, db, ledger, square, sync
 from app.payouts import RuleError
 from tests.test_square import FakeSquare, TwoNightsClient, fnb, oauth_env, pay  # noqa: F401 (fixtures)
 from tests.test_sync import conn  # noqa: F401
@@ -134,22 +134,33 @@ def test_bank_pages(client):  # noqa: F811
     page = client.post("/bank/1", data={"deposited_on": "2026-01-03", "amount": "30", "note": "fixed"}).text
     assert "Deposit 2026-01-03" in page and "$30.00</b> deposited" in page
     page = client.get("/bank?on=2026-01-04").text
-    assert 'href="/bank/1"' in page and "$30.00</b> in" in page and "The opening balance" in page
+    assert 'href="/bank/1"' in page and "$30.00</b> in" in page and 'id="compare"' not in page  # step 1 only
+    page = client.get("/bank?on=2026-01-04&balance=130").text
+    assert "this is the opening balance" in page and "Lock Sun 4 Jan at $130.00" in page
     assert 'href="/bank"' in client.get("/").text  # in the nav
     page = client.post("/bank/reconcile", data={"reconciled_on": "2026-01-04", "balance": "130", "note": "start"}).text
-    assert "Reconciled to <b>2026-01-04</b>" in page and "(opening balance)" in page
+    assert "Last reconciled <b>Sun 4 Jan</b>" in page and "(opening balance)" in page
     page = client.post("/bank", data={"deposited_on": "2026-01-03", "amount": "5"}).text
     assert "locked by the bank reconciliation of 2026-01-04" in page
     client.post("/bank", data={"deposited_on": "2026-01-05", "amount": "20"})
     page = client.get("/bank?on=2026-01-06").text
     assert "$150.00</b> expected on 2026-01-06" in page
+    r = client.post("/bank/reconcile", data={"reconciled_on": "2026-01-06", "balance": "149", "note": ""},
+                    follow_redirects=False)
+    assert r.headers["location"].startswith("/bank?on=2026-01-06&balance=149&error=")
+    page = client.get(r.headers["location"]).text
+    assert "1.00 less than expected" in page and '<span class="v">-$1.00</span>' in page
+    assert 'value="1.00" required' in page and '<option value="out" selected>' in page and "Lock anyway" in page
+    r = client.post("/bank/adjustments", data={"occurred_on": "2026-01-06", "amount": "1", "direction": "out",
+                                               "category": "bank_fee", "note": "fee", "balance": "149"},
+                    follow_redirects=False)
+    assert r.headers["location"] == "/bank?on=2026-01-06&balance=149#explain"
+    page = client.get(r.headers["location"]).text
+    assert "it matches" in page and "bank fee" in page and "Lock Tue 6 Jan at $149.00" in page
     page = client.post("/bank/reconcile", data={"reconciled_on": "2026-01-06", "balance": "149", "note": ""}).text
-    assert "1.00 less than expected" in page
-    page = client.post("/bank/adjustments", data={"occurred_on": "2026-01-06", "amount": "1", "direction": "out",
-                                                  "category": "bank_fee", "note": "fee"}).text
-    assert "bank fee" in page and "$149.00</b> expected on 2026-01-06" in page
-    page = client.post("/bank/reconcile", data={"reconciled_on": "2026-01-06", "balance": "149", "note": ""}).text
-    assert "-$1.00" in page and "Reconciled to <b>2026-01-06</b>" in page and "1 explained" in page
+    assert "-$1.00" in page and "Last reconciled <b>Tue 6 Jan</b>" in page and "1 explained" in page
+    page = client.get("/bank?on=2026-01-05&balance=1").text
+    assert "Mon 5 Jan is already reconciled, up to Tue 6 Jan" in page and "Lock" not in page.split("Not reconciled")[0]
     assert "Locked by the bank reconciliation of 2026-01-04" in client.post("/bank/1/delete").text
     assert "can't change" not in client.get("/bank/2").text
     client.post("/bank/reconcile/undo")
@@ -356,3 +367,18 @@ def test_differences_from_before_adjustments_become_unexplained_ones(two_nights)
     rows = [tuple(r) for r in two_nights.execute("SELECT occurred_on, amount_cents, category, note FROM bank_adjustment")]
     assert rows == [("2026-01-05", 376, "unexplained", "not sure")]
     assert bank.expected(two_nights, "2026-01-06")["expected"] == 5376  # nothing changes going forward
+
+
+def test_a_players_bank_transfer_explains_a_difference(client):  # noqa: F811
+    client.post("/bank/reconcile", data={"reconciled_on": "2026-01-04", "balance": "100"})
+    with db.session() as conn:
+        conn.execute("INSERT INTO player (id, gamer_tag) VALUES ('u9', 'Zed')")
+    data = {"occurred_on": "2026-01-05", "amount": "15", "direction": "in", "category": "player_transfer",
+            "balance": "115"}
+    assert "Choose the player" in client.post("/bank/adjustments", data=data).text
+    page = client.post("/bank/adjustments", data={**data, "player_id": "u9", "note": "rent"}).text
+    assert "bank transfer from <a href=\"/players/u9\">Zed</a>" in page and "it matches" in page
+    with db.session() as conn:
+        assert conn.execute("SELECT method, amount_cents FROM receipt").fetchone()[:] == ("bank", 1500)
+    assert "into the account" in client.post("/bank/adjustments", data={**data, "player_id": "u9",
+                                                                        "direction": "out"}).text

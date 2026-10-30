@@ -3,26 +3,51 @@
 {% block body %}
 <h1>Bank</h1>
 {% if payouts_status %}<div class="strip {{ 'err' if payouts_status.state == 'error' }}">Square payouts{{ " (automatic)" if payouts_status.auto }}, {{ payouts_status.at|localtime }}: {{ payouts_status.message }}</div>{% endif %}
-<div class="summary">{% if last %}<span>Reconciled to <b>{{ last.reconciled_on }}</b></span><span><b>{{ last.balance_cents|money }}</b> in the bank then</span>{% else %}<span class="mut">Not reconciled yet: the first reconciliation sets the opening balance.</span>{% endif %}
-<span><b>{{ x.in|money }}</b> in</span><span><b>{{ x.out|money }}</b> out</span>{% if x.expected is not none %}<span><b>{{ x.expected|money }}</b> expected on {{ day }}</span>{% endif %}</div>
-<h2>Reconcile</h2>
-<form method="get" action="/bank" class="toolbar"><label>Balance on<input type="date" name="on" value="{{ day }}" max="{{ today }}" required></label><button class="sec">Show what's expected</button>
-<span class="mut">Counts deposits and payments out up to this day{% if last %} since {{ last.reconciled_on }}{% endif %}.</span></form>
-<form method="post" action="/bank/reconcile" class="toolbar"><input type="hidden" name="reconciled_on" value="{{ day }}">
-<label>Bank balance at the end of {{ day }} $<input name="balance" size="10" required></label>
-<label>Note<input name="note" size="30"></label><button>Reconcile and lock {{ day }}</button>
-<label class="inline"><input type="checkbox" name="anyway" value="1"> lock anyway, the difference unexplained (say why in the note)</label>
-<span class="mut">{% if x.expected is none %}The opening balance: nothing to compare yet.{% else %}Expected {{ x.expected|money }}. If the bank says otherwise, explain the difference below first.{% endif %}</span></form>
-<h2 id="adjust">Explain a difference</h2>
-<form method="post" action="/bank/adjustments" class="toolbar">
-<label>On<input type="date" name="occurred_on" value="{{ day }}" max="{{ today }}" required></label>
-<label>Amount $<input name="amount" size="9" required></label>
-<label>Direction<select name="direction"><option value="in">into the account</option><option value="out">out of the account</option></select></label>
-<label>What it was<select name="category">{% for k, label in categories.items() %}<option value="{{ k }}">{{ label }}</option>{% endfor %}</select></label>
-<label>Note<input name="note" size="24"></label><button class="sec">Add</button>
-<span class="mut">Money through the account that the app doesn't otherwise know about. A player's bank transfer for what they owe goes on their tournament's "Who paid" instead.</span></form>
-<p class="help">Reconciling locks everything dated on or before the day: deposits, payments to players and venues, and every tournament up to then that has no issues left (the rest lock as soon as they're sorted out). Locked tournaments are no longer re-imported or recomputed. Undo the latest reconciliation to change anything it locked.</p>
+<div class="summary">{% if last %}<span>Last reconciled <b>{{ last.reconciled_on|shortday }}</b>, with <b>{{ last.balance_cents|money }}</b> in the bank</span>{% else %}<span class="mut">Not reconciled yet: the first reconciliation sets the opening balance.</span>{% endif %}</div>
+
+<h2 class="step{{ ' done' if check }}" id="reconcile"><span class="no">1</span>What does the bank say?</h2>
+<form method="get" action="/bank#compare" class="toolbar"><label>Balance at the end of<input type="date" name="on" value="{{ day }}" max="{{ today }}" required></label>
+<label>Bank balance $<input name="balance" size="10" value="{{ check.text if check }}" placeholder="from the bank app" required></label><button>Check</button></form>
+<p class="help">Open the bank app, pick a day (today is fine) and enter the balance at the end of it.</p>
+
+{% if check and last and day <= last.reconciled_on %}<div class="strip" id="compare">{{ day|shortday }} is already reconciled, up to {{ last.reconciled_on|shortday }}. Pick a later day, or undo the last reconciliation below to redo it.</div>
+{% elif check %}
+<h2 class="step{{ ' done' if check.diff == 0 }}" id="compare"><span class="no">2</span>Compare</h2>
+<div class="tiles">
+<div class="tile"><span class="k">The bank says</span><span class="v">{{ check.cents|money }}</span><span class="s">at the end of {{ day|shortday }}</span></div>
+<div class="tile"><span class="k">The app expects</span><span class="v">{% if x.expected is none %}–{% else %}{{ x.expected|money }}{% endif %}</span>
+<span class="s">{% if x.expected is none %}nothing to compare yet: this is the opening balance{% else %}{{ last.balance_cents|money }} on {{ last.reconciled_on|shortday }}, {{ x.in|money }} in, {{ x.out|money }} out{% endif %}</span></div>
+{% if check.diff is not none %}<div class="tile {{ 'paid' if check.diff == 0 else 'wait' }}"><span class="k">Difference</span><span class="v">{{ check.diff|money }}</span>
+<span class="s">{% if check.diff == 0 %}it matches{% elif check.diff > 0 %}more in the bank than the app knows about{% else %}less in the bank than the app expects{% endif %}</span></div>{% endif %}
+</div>
+
+<h2 class="step" id="explain"><span class="no">3</span>{% if check.diff %}Explain it, then lock{% else %}Lock{% endif %}</h2>
+{% if check.diff %}
+<p class="help">Things to check first: a Square deposit not imported yet (<a href="#deposits">import payouts</a> below), or a payout marked paid on the wrong day (<a href="/to-pay?view=history">Paid</a>). Anything else that went through the account, explain here.</p>
+<form method="post" action="/bank/adjustments" class="toolbar"><input type="hidden" name="balance" value="{{ check.text }}">
+<label>On<input type="date" name="occurred_on" value="{{ day }}" max="{{ day }}" required></label>
+<label>Amount $<input name="amount" size="9" value="{{ '%.2f' % ((check.diff|abs) / 100) }}" required></label>
+<label>Direction<select name="direction"><option value="in" {{ "selected" if check.diff > 0 }}>into the account</option><option value="out" {{ "selected" if check.diff < 0 }}>out of the account</option></select></label>
+<label>What it was<select name="category"><option value="player_transfer">a player paid by bank transfer</option>{% for k, label in categories.items() if k != "unexplained" %}<option value="{{ k }}">{{ label }}</option>{% endfor %}</select></label>
+<label>Player<select name="player_id"><option value="">(for a player's transfer)</option>{% for p in players %}<option value="{{ p.id }}">{{ p.gamer_tag }}</option>{% endfor %}</select></label>
+<label>Note<input name="note" size="20"></label><button>Explain</button></form>
+<p class="help">A player's transfer is recorded against what they owe, oldest nights first (anything over is credit), and shows on <a href="/owed">Owed to us</a>.</p>
+{% endif %}
+{% if x.adjustments or x.receipts %}<div class="tw"><table><thead><tr><th>Day</th><th>Explained as</th><th class="r">Amount</th><th>Note</th><th></th></tr></thead><tbody>
+{% for r in x.receipts %}<tr><td>{{ r.received_on|shortday }}</td><td>bank transfer from {{ m.player(r.player_id, r.gamer_tag) }}</td>{{ m.mtd(r.amount_cents) }}<td class="mut">{{ r.reference }} {{ r.note }}</td>
+<td><form class="inline" method="post" action="/receipts/{{ r.id }}/delete"><input type="hidden" name="next" value="/bank?on={{ day }}&amp;balance={{ check.text|urlq }}#explain"><button class="sec">Remove</button></form></td></tr>{% endfor %}
+{% for a in x.adjustments %}<tr><td>{{ a.occurred_on|shortday }}</td><td>{{ categories[a.category] }}</td><td class="r {{ 'neg' if a.amount_cents < 0 }}">{{ a.amount_cents|money }}</td><td class="mut">{{ a.note }}</td>
+<td><form class="inline" method="post" action="/bank/adjustments/{{ a.id }}/delete"><input type="hidden" name="balance" value="{{ check.text }}"><button class="sec">Remove</button></form></td></tr>{% endfor %}
+</tbody></table></div>{% endif %}
+<form method="post" action="/bank/reconcile" class="toolbar"><input type="hidden" name="reconciled_on" value="{{ day }}"><input type="hidden" name="balance" value="{{ check.text }}">
+{% if not check.diff %}<label>Note<input name="note" size="24"></label><button>Lock {{ day|shortday }} at {{ check.cents|money }}</button></form>
+{% else %}</form><details class="confirm"><summary>Lock anyway</summary><div><form method="post" action="/bank/reconcile" class="toolbar">
+<input type="hidden" name="reconciled_on" value="{{ day }}"><input type="hidden" name="balance" value="{{ check.text }}"><input type="hidden" name="anyway" value="1">
+<label>Why it can't be explained yet<input name="note" size="28" required></label><button class="danger">File {{ check.diff|money }} as unexplained and lock</button></form></div></details>{% endif %}
+<p class="help">Locking takes in everything dated on or before {{ day|shortday }}: deposits, transfers, payments to players and venues, and every tournament up to then with nothing left to sort out. Locked items can't change until the reconciliation is undone.</p>
+{% endif %}
 <h2>Not reconciled yet, up to {{ day }} <span class="n">· {{ x.deposits|length + x.receipts|length + x.adjustments|length + x.players|length + x.venues|length }}</span></h2>
+<div class="summary"><span><b>{{ x.in|money }}</b> in</span><span><b>{{ x.out|money }}</b> out</span>{% if x.expected is not none %}<span><b>{{ x.expected|money }}</b> expected on {{ day }}</span>{% endif %}</div>
 <table class="sortable"><thead><tr><th>Date</th><th>What</th><th>Who</th><th class="r">In</th><th class="r">Out</th><th>Note</th></tr></thead><tbody>
 {% for d in x.deposits %}<tr><td>{{ d.deposited_on }}</td><td><a href="/bank/{{ d.id }}">{{ "Square payout" if d.square_payout_id else "Deposit" }}</a>{% if d.reference and d.reference != "Square payout" %} <span class="mut">{{ d.reference }}</span>{% endif %}</td><td></td>{{ m.mtd(d.amount_cents) }}<td></td><td class="mut">{{ d.note }}</td></tr>{% endfor %}
 {% for r in x.receipts %}<tr><td>{{ r.received_on }}</td><td>Bank transfer from a player{% if r.reference %} <span class="mut">{{ r.reference }}</span>{% endif %}</td><td>{{ m.player(r.player_id, r.gamer_tag) }}</td>{{ m.mtd(r.amount_cents) }}<td></td><td class="mut">{{ r.note }}</td></tr>{% endfor %}
@@ -37,7 +62,7 @@
 <td class="r">{{ r.deposits }} deposits, {{ r.paid_out }} paid out, {{ r.tournaments }} tournaments{% if r.adjustments %}, {{ r.adjustments }} explained{% endif %}{% if r.unexplained %} <span class="warn">({{ r.unexplained|money }} unexplained)</span>{% endif %}</td><td class="mut">{{ r.note }}{% if loop.last %} (opening balance){% endif %}</td>
 <td>{% if loop.first %}<form class="inline" method="post" action="/bank/reconcile/undo"><button class="sec">Undo</button></form>{% endif %}</td></tr>
 {% else %}<tr><td colspan="7" class="mut">No reconciliations yet.</td></tr>{% endfor %}</tbody></table>
-<h2>Deposits</h2>
+<h2 id="deposits">Deposits</h2>
 <form method="post" action="/bank/square/pull" class="toolbar">
 <label>Square payouts sent since<input type="date" name="since" value="{{ import_since }}" required></label>
 <button class="sec" {{ "disabled" if not square_setup.env }} title="{{ square_setup.error or ('Square: ' ~ square_setup.env if square_setup.env else 'Square is not set up (see README)') }}">Import payouts from Square</button>

@@ -753,3 +753,42 @@ def test_a_linked_player_short_is_flagged_even_when_the_total_covers_it(fnb):
     fnb.execute("UPDATE square_payment SET no_player=1 WHERE id='P2'")
     [i] = square.payment_issues(fnb)
     assert (i["kind"], i["players"], i["missing"]) == ("missing", 1, 500)
+
+
+def test_a_shortfall_the_organiser_covers_stops_being_flagged_until_it_grows(fnb):
+    square.pull_tournament(fnb, FakeSquare([pay(f"P{i}", 1000, f"fp-{i}") for i in range(1, 5)]), "t1")
+    fnb.execute("UPDATE square_payment SET no_player=1")
+    with pytest.raises(RuleError, match="Nothing is missing"):  # all $40 taken
+        square.cover_shortfall(fnb, "t1", "")
+    fnb.execute("UPDATE square_payment SET amount_cents=0 WHERE id='P4'")  # refunded: $10 short overall (#32)
+    square.cover_shortfall(fnb, "t1", " my shout ")
+    assert fnb.execute("SELECT covered_cents, covered_note FROM tournament WHERE id='t1'").fetchone()[:] == (1000, "my shout")
+    assert square.payment_issues(fnb) == []
+    fnb.execute("UPDATE square_payment SET amount_cents=0 WHERE id='P3'")  # refunded: $20 short now
+    [i] = square.payment_issues(fnb)
+    assert (i["kind"], i["missing"]) == ("missing", 2000)
+    square.uncover_shortfall(fnb, "t1")
+    assert fnb.execute("SELECT covered_cents FROM tournament WHERE id='t1'").fetchone()[0] is None
+
+
+def test_covering_a_shortfall_on_the_page(client, monkeypatch):  # noqa: F811
+    monkeypatch.setattr(main, "GrpcParryClient", TwoNightsClient)
+    client.post("/series", data={"name": "FNB", "custom_slug": "fnb"})
+    client.post("/periods/1", data={"entry_fee": "5"})
+    client.post("/series/1/sync")
+    for _ in range(50):
+        if sync.status[1]["state"] != "running":
+            break
+        time.sleep(0.05)
+    oauth_env(monkeypatch, "sandbox")
+    monkeypatch.setattr(main, "HttpSquareClient", lambda: FakeSquare([pay("P1", 1500, "fp-a")]))
+    client.post("/tournaments/t1/square/pull")
+    client.post("/square-payments/P1/no-player")
+    page = client.get("/tournaments/t1").text
+    assert "$5.00 missing." in page and 'action="/tournaments/t1/cover"' in page
+    assert 'href="/tournaments/t1#square"' in client.get("/").text  # flagged
+    page = client.post("/tournaments/t1/cover", data={"note": "my shout"}).text
+    assert "covering $5.00" in page and "my shout" in page
+    assert 'href="/tournaments/t1#square"' not in client.get("/").text
+    page = client.post("/tournaments/t1/cover", data={"undo": "1"}).text
+    assert "$5.00 missing." in page

@@ -443,22 +443,43 @@ def payment_issues(conn, series_id: int | None = None) -> list[dict]:
     series not using Square) would otherwise show everyone as unpaid. Excluded tournaments are skipped.
     """
     out = []
-    for t in conn.execute("""SELECT t.id, t.name, t.series_id, t.start_date FROM tournament t
+    for t in conn.execute("""SELECT t.id, t.name, t.series_id, t.start_date, t.covered_cents FROM tournament t
                              WHERE t.excluded=0 AND (? IS NULL OR t.series_id=?)
                              AND EXISTS (SELECT 1 FROM square_payment WHERE tournament_id=t.id)
                              ORDER BY t.start_date DESC""", (series_id, series_id)).fetchall():
         r = reconcile(conn, t["id"])
-        missing = [p for p in r["players"] if p["state"] in ("unpaid", "short")]
+        players, cents = missing(r)
         row = {"tournament_id": t["id"], "tournament_name": t["name"], "series_id": t["series_id"],
-               "players": len(missing), "missing": -sum(p["diff"] for p in missing),
-               "unlinked": r["unlinked"], "unlinked_cents": r["unlinked_cents"]}
-        if missing:
+               "players": players, "missing": cents, "unlinked": r["unlinked"], "unlinked_cents": r["unlinked_cents"]}
+        if cents and (t["covered_cents"] is None or cents > t["covered_cents"]):  # covered by the organiser (#32)
             out.append({**row, "kind": "missing"})
-        elif r["shortfall"]:
-            out.append({**row, "kind": "missing", "missing": r["shortfall"]})
         elif r["unlinked"]:
             out.append({**row, "kind": "link"})
     return out
+
+
+def missing(r: dict) -> tuple[int, int]:
+    """(players, cents) missing from a tournament's reconciliation: what linked players are short (unpaid ones only
+    once every payment is linked), else how much less was taken than expected overall (players 0)."""
+    short = [p for p in r["players"] if p["state"] in ("unpaid", "short")]
+    if short:
+        return len(short), -sum(p["diff"] for p in short)
+    return 0, r["shortfall"]
+
+
+def cover_shortfall(conn, tournament_id: str, note: str):
+    """Acknowledge what's missing from a tournament as covered by the organiser (#32): it stops being flagged unless
+    more goes missing later."""
+    check_unlocked(conn, tournament_id)
+    _, cents = missing(reconcile(conn, tournament_id))
+    if not cents:
+        raise RuleError("Nothing is missing from this tournament")
+    conn.execute("UPDATE tournament SET covered_cents=?, covered_note=? WHERE id=?", (cents, note.strip(), tournament_id))
+
+
+def uncover_shortfall(conn, tournament_id: str):
+    check_unlocked(conn, tournament_id)
+    conn.execute("UPDATE tournament SET covered_cents=NULL, covered_note='' WHERE id=?", (tournament_id,))
 
 
 def lock_clear_tournaments(conn) -> int:

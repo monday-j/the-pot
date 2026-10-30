@@ -57,7 +57,9 @@ CREATE TABLE IF NOT EXISTS tournament (
     venue_flat_cents INTEGER NOT NULL DEFAULT 0,
     venue_entry_pct TEXT NOT NULL DEFAULT '0',
     venue_bracket_pct TEXT NOT NULL DEFAULT '0',
-    locked_by INTEGER REFERENCES reconciliation(id) ON DELETE SET NULL  -- see square.lock_clear_tournaments
+    locked_by INTEGER REFERENCES reconciliation(id) ON DELETE SET NULL,  -- see square.lock_clear_tournaments
+    covered_cents INTEGER,  -- a shortfall the organiser acknowledged and covers (#32); NULL if none
+    covered_note TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS event (
     id TEXT PRIMARY KEY,
@@ -294,6 +296,8 @@ ADDED_COLUMNS = {
         "venue_entry_pct": "TEXT NOT NULL DEFAULT '0'",
         "venue_bracket_pct": "TEXT NOT NULL DEFAULT '0'",
         "locked_by": "INTEGER REFERENCES reconciliation(id) ON DELETE SET NULL",
+        "covered_cents": "INTEGER",
+        "covered_note": "TEXT NOT NULL DEFAULT ''",
     },
     "venue": {
         "square_location_id": "TEXT NOT NULL DEFAULT ''",

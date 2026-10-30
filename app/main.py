@@ -741,6 +741,21 @@ def resolve_entrant(tournament_id: str, player_id: str, note: str = Form(""), un
     return back(f"/tournaments/{tournament_id}#paid")
 
 
+@app.post("/tournaments/{tournament_id}/cover")
+def cover_shortfall(tournament_id: str, note: str = Form(""), undo: str = Form("")):
+    try:
+        with db.session() as conn:
+            one(conn, "SELECT id FROM tournament WHERE id=?", tournament_id)
+            if undo:
+                square.uncover_shortfall(conn, tournament_id)
+            else:
+                square.cover_shortfall(conn, tournament_id, note)
+            square.lock_clear_tournaments(conn)
+    except RuleError as e:
+        return back(f"/tournaments/{tournament_id}", str(e))
+    return back(f"/tournaments/{tournament_id}#square")
+
+
 # --- rules -----------------------------------------------------------------
 
 @app.post("/series/{series_id}/rules")
@@ -830,6 +845,7 @@ def tournament_page(request: Request, tournament_id: str):
                                              (tournament_id,)).fetchone()}
         venues = venue_options(conn)
         recon = square.reconcile(conn, tournament_id)
+        recon["missing_players"], recon["missing"] = square.missing(recon)
     return render(request, "tournament.html", t=t, events=events, attendees=list(attendees.values()), venue=venue,
                   venues=venues, recon=recon, square_setup=square_setup(), meanings=square.MEANINGS)
 

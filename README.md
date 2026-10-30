@@ -50,7 +50,8 @@ you've paid them and what you still owe. For your LAN, behind one shared passwor
   needn't match to anyone **No player needed** and it still counts, without asking to be linked. Mark payments that
   aren't tournament fees (e.g. a drink) **Not a fee** to leave them out. A payment is only ever counted for one
   tournament. A tournament needs attention when less was taken than expected, a linked player paid too little, or
-  payments are neither linked nor marked.
+  payments are neither linked nor marked. When a tournament is short and you'll make up the difference yourself,
+  press **I'll cover it** (with a note): it stops being flagged, unless more goes missing later.
   When an entrant's fee was sorted out some other way (someone else paid for them, or it was waived), mark them
   **Sorted out** in the "Who paid" table with a note saying how: they no longer count as unpaid or missing.
 - **What each payment was for**: with orders and items authorised, pulling payments also fetches each payment's order

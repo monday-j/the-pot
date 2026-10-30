@@ -45,6 +45,10 @@
 <span><b class="{{ 'warn' if recon.unlinked }}">{{ recon.unlinked }}</b> to link to a player{% if recon.no_player %} <span class="mut">(+{{ recon.no_player }} with no player needed)</span>{% endif %}</span>
 <span><b class="{{ 'bad' if recon.problems }}">{{ recon.problems }}</b> players unpaid, short or over</span>
 {% if recon.unmatched %}<span><b class="warn">{{ recon.unmatched }}</b> player{{ "s" if recon.unmatched != 1 }} not matched to a payment yet ({{ recon.unlinked }} payment{{ "s" if recon.unlinked != 1 }} to link)</span>{% endif %}{% endif %}</div>
+{% if recon.payments and (recon.missing or t.covered_cents is not none) %}<form method="post" action="/tournaments/{{ t.id }}/cover" class="toolbar">
+{% if t.covered_cents is not none %}<span class="{{ 'ok' if recon.missing <= t.covered_cents else 'bad' }}">You're covering {{ t.covered_cents|money }}{% if t.covered_note %} <span class="mut">({{ t.covered_note }})</span>{% endif %}{% if recon.missing > t.covered_cents %}, but {{ recon.missing|money }} is missing now{% endif %}.</span>
+<input type="hidden" name="undo" value="1"><button class="sec">Undo</button>{% else %}
+<span class="bad">{{ recon.missing|money }} missing.</span><label>Note<input name="note" size="24" placeholder="e.g. covered from my pocket"></label><button class="sec" title="Acknowledge it and stop flagging this tournament; you cover the difference">I'll cover it</button>{% endif %}</form>{% endif %}
 {% set sq = square_setup %}<form method="post" action="/tournaments/{{ t.id }}/square/pull" class="toolbar"><button class="sec" {{ "disabled" if not sq.env or t.locked_by }}>Pull payments from Square</button>
 {% if not sq.token %}<span class="mut">Give the app read-only Square access (see the README) to pull payments.</span>{% elif sq.error %}<span class="bad">{{ sq.error }}</span>{% else %}<span class="tag" title="SQUARE_ENV">Square: {{ sq.env }}</span> <span class="mut">Payments on {{ t.start_date }} (until 6am the next day){% if venue and venue.info.venue_id %} at the venue's Square location{% endif %}.</span>{% endif %}</form>
 {% if recon.payments %}

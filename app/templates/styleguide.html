@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block title %}Style guide · The Pot{% endblock %}
+{% block body %}
+<h1>Style guide</h1>
+<p class="help">Every component of the Scoreboard design (#40), for checking contrast, phone width and print. All figures and names here are examples.</p>
+
+<h2>Colours</h2>
+<div class="swatches">
+{% for name, label in [("bg", "page"), ("surface", "surface"), ("raised", "raised"), ("line-strong", "line"), ("fg", "text"), ("mut", "quiet text"), ("dim", "dim text"), ("acc", "accent: act here"), ("paid", "paid"), ("owing", "owing"), ("wait", "needs you"), ("credit", "credit"), ("link", "link / info"), ("locked", "locked")] %}
+<div class="swatch"><i style="background:var(--{{ name }})"></i><span>{{ label }} <code>--{{ name }}</code></span></div>{% endfor %}
+</div>
+
+<h2>Type</h2>
+<h1>Launceston Smash Club #91</h1>
+<h2>Section heading <span class="n">· 12</span></h2>
+<h3>Lane or sub-heading</h3>
+<p>Body text in Barlow, for notes and explanations. <span class="mut">Quiet text for secondary detail.</span> <span class="dim">Dim text for the least important.</span> <a href="#">A link</a>.</p>
+<p class="help">Help text sits under a form or table and explains what it does, in a sentence or two.</p>
+
+<h2>Money tiles</h2>
+<div class="tiles">
+<a class="tile owing" href="#"><span class="k">Owed to us</span><span class="v">$45.00</span><span class="s">3 players · oldest 12 days</span></a>
+<a class="tile acc" href="#"><span class="k">To pay</span><span class="v">$210.00</span><span class="s">4 recipients · bank $512.40</span></a>
+<a class="tile" href="#"><span class="k">Bank</span><span class="v">$512.40</span><span class="s">reconciled 6 days ago</span></a>
+<a class="tile wait" href="#"><span class="k">Unexplained</span><span class="v">$3.76</span><span class="s">explain on the Bank page</span></a>
+</div>
+
+<h2>Status</h2>
+<p><span class="chip paid">paid</span> <span class="chip paid">paid late</span> <span class="chip credit">paid by credit</span> <span class="chip owing">owing</span>
+<span class="chip wait">not matched yet</span> <span class="chip link">2 to link</span> <span class="chip locked">locked</span></p>
+
+<h2>Run sheet lanes</h2>
+<div class="lanes">
+<section class="lane"><h3>Waiting on parry.gg <span class="n">1</span></h3>
+<a class="card" href="#"><span class="t">LSC #92</span><span class="d">Thu 5 Nov · 18 entrants</span><span class="chips"><span class="chip wait">1 event not final</span></span></a></section>
+<section class="lane"><h3>Collect <span class="n">1</span></h3>
+<a class="card wait" href="#"><span class="t">LSC #91</span><span class="d">Thu 29 Oct · 16 entrants</span><span class="chips"><span class="chip link">3 to link</span><span class="chip owing">$15 owed</span></span></a></section>
+<section class="lane"><h3>Pay out <span class="n">1</span></h3>
+<a class="card owing" href="#"><span class="t">LSC #90</span><span class="d">Thu 22 Oct</span><span class="chips"><span class="chip owing">$120 to pay</span></span></a></section>
+<section class="lane"><h3>Done <span class="n">0</span></h3><p class="empty">Nothing done since the last reconcile.</p></section>
+</div>
+
+<h2 class="step"><span class="no">1</span>Takings<span class="state"><span class="chip wait">3 to link</span></span></h2>
+<h2 class="step done"><span class="no">2</span>Payouts<span class="state"><span class="chip paid">all paid</span></span></h2>
+
+<h2>Table</h2>
+<div class="tw"><table class="sortable"><thead><tr><th>Player</th><th class="r">Owed</th><th class="r">Paid tonight</th><th class="r">Left</th><th>Status</th><th></th></tr></thead><tbody>
+<tr><td><a href="#">Alice</a></td><td class="r">$15.00</td><td class="r">$15.00</td><td class="r">$0.00</td><td><span class="chip paid">paid</span></td><td></td></tr>
+<tr><td><a href="#">Bob</a></td><td class="r">$15.00</td><td class="r">$0.00</td><td class="r neg">$15.00</td><td><span class="chip owing">owing</span></td><td><button class="sec">Settle</button></td></tr>
+<tr><td><a href="#">Cat</a></td><td class="r">$15.00</td><td class="r">$30.00</td><td class="r">$0.00</td><td><span class="chip paid">paid</span> <span class="mut">$15.00 left over: credit</span></td><td></td></tr>
+</tbody><tfoot><tr><td>3 entrants</td><td class="r">$45.00</td><td class="r">$45.00</td><td class="r">$15.00</td><td colspan="2"></td></tr></tfoot></table></div>
+
+<h2>Controls</h2>
+<form class="toolbar"><label>Paid on<input type="date"></label><label>Amount $<input size="8" placeholder="15.00"></label>
+<label>Method<select><option>bank transfer</option><option>cash</option></select></label>
+<label class="inline"><input type="checkbox"> lock anyway</label><button type="button">Mark paid</button><button type="button" class="sec">Undo</button><button type="button" class="danger">Write off</button></form>
+<details class="confirm"><summary>Undo reconciliation</summary><div>
+<p>This unlocks everything up to 22 Oct. Tournaments it locked can change again.</p><button type="button" class="danger">Undo it</button></div></details>
+<details class="panel"><summary>Setup: venue fee, venue, takings tracked</summary><div><p class="mut">Settings you rarely change sit in a panel like this.</p></div></details>
+
+<h2>Messages and empty states</h2>
+<div class="strip">3 payments still need linking to players.</div>
+<div class="strip err">The balance is $1.00 less than expected: explain the difference first, or lock it anyway with a note.</div>
+<div class="strip ok">Reconciled to 30 Oct.</div>
+<p class="empty">Nobody owes anything.</p>
+
+<h2>Aging</h2>
+<div class="aging" title="0–7, 8–30, 31–90, 90+ days"><span class="a0" style="width:40%"></span><span class="a1" style="width:30%"></span><span class="a2" style="width:20%"></span><span class="a3" style="width:10%"></span></div>
+{% endblock %}

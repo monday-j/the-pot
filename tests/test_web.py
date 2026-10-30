@@ -372,3 +372,10 @@ def test_favicon(client):
     page = client.get("/").text
     assert 'href="/static/favicon.svg"' in page and 'href="/favicon.ico"' in page
     assert '<a class="brand" href="/"><img src="/static/favicon.svg" alt=""' in page  # the icon is part of the home link
+
+
+def test_style_guide_and_fonts_are_served(client):  # noqa: F811
+    page = client.get("/setup/styleguide").text
+    assert "Style guide" in page and 'class="tile owing"' in page and "onsubmit" not in page
+    font = client.get("/static/fonts/barlow-condensed-800.woff2")
+    assert font.status_code == 200 and font.content[:4] == b"wOF2"

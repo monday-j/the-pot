@@ -1,4 +1,4 @@
-"""What each Square item sold means for the takings."""
+"""Setup: what each Square item sold means for the takings, and the style guide."""
 
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import RedirectResponse
@@ -31,3 +31,9 @@ def save_square_item(key: str = Form(...), meaning: str = Form(""), name: str = 
     except RuleError as e:
         return back("/square/items", str(e))
     return back("/square/items")
+
+
+@router.get("/setup/styleguide", include_in_schema=False)
+def styleguide(request: Request):
+    """Every component of the design (#40), with example data, for checking it."""
+    return render(request, "styleguide.html")

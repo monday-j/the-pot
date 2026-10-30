@@ -8,6 +8,12 @@ from tests.conftest import PASSWORD
 from tests.test_sync import FakeClient, TwoNightsClient
 
 
+def payee(client, kind: str, rid) -> str:
+    """One recipient's section on To pay ("" if they're owed nothing)."""
+    page = client.get("/to-pay").text
+    return page.split(f'id="{kind}-{rid}"')[1].split("</section>")[0] if f'id="{kind}-{rid}"' in page else ""
+
+
 def lane(page: str, key: str) -> str:
     """One lane of the run sheet."""
     return page.split(f'class="lane lane-{key}"')[1].split("</section>")[0]
@@ -80,7 +86,8 @@ def seeded(client):
 
 
 @pytest.mark.parametrize("url", ["/", "/series", "/series/1", "/tournaments/t1", "/events/e1", "/events", "/games",
-                                 "/games/Smash%20Ultimate", "/players", "/players/u1", "/payouts", "/venues"])
+                                 "/games/Smash%20Ultimate", "/players", "/players/u1", "/to-pay",
+                                 "/to-pay?view=history", "/venues", "/owed"])
 def test_every_page_renders(seeded, url):
     assert seeded.get(url).status_code == 200
 
@@ -90,7 +97,7 @@ def test_records_link_to_each_other(seeded):
     for href in ('/players/u1', '/tournaments/t1', '/series/FNB', '/games/Smash%20Ultimate'):
         assert f'href="{href}"' in page
     assert 'href="/events/e1"' in seeded.get("/players/u1").text
-    assert 'href="/games/Smash%20Ultimate"' in seeded.get("/payouts").text
+    assert 'href="/players/u1"' in seeded.get("/to-pay").text
     assert 'href="/players/u2"' in seeded.get("/tournaments/t1").text
     assert 'href="/events/e1"' in seeded.get("/games/Smash%20Ultimate").text
     assert 'href="/events/e1"' in seeded.get("/events").text
@@ -100,14 +107,31 @@ def test_unknown_game_is_404(seeded):
     assert seeded.get("/games/Nope").status_code == 404
 
 
-def test_payout_ledger_filters(seeded):
-    assert seeded.get("/payouts").text.count("Mark paid") == 4
-    seeded.post("/payouts/1/paid", data={"next": "/payouts"})
-    owed = seeded.get("/payouts?status=owed").text
-    paid = seeded.get("/payouts?status=paid").text
-    assert owed.count("Mark paid") == 3 and "Mark paid" not in paid and paid.count("Undo") == 1
-    assert "Alice" in seeded.get("/payouts?q=ali").text and "Bob" not in seeded.get("/payouts?q=ali").text
-    assert "No payouts match" in seeded.get("/payouts?game=Other").text
+def test_to_pay_groups_by_recipient_and_lists_what_was_paid(seeded):
+    page = seeded.get("/to-pay").text
+    assert page.count('<section class="payee"') == 4 and '<span class="v">$26.00</span>' in page
+    alice = payee(seeded, "player", "u1")
+    assert "1st in " in alice and 'name="expect" value="1300"' in alice
+    assert "now 13.00" in seeded.post("/to-pay/player/u1/paid", data={"expect": "999"}).text  # changed since
+    r = seeded.post("/to-pay/player/u1/paid", data={"expect": "1300", "paid_on": "2026-01-03", "note": "transfer"},
+                    follow_redirects=False)
+    assert r.headers["location"] == "/to-pay" and payee(seeded, "player", "u1") == ""
+    assert "Nothing is owed to them" in seeded.post("/to-pay/player/u1/paid", data={"expect": "1300"}).text
+
+    paid = seeded.get("/to-pay?view=history").text
+    assert "2026-01-03" in paid and "transfer" in paid and paid.count("Undo") == 1
+    assert "Alice" in seeded.get("/to-pay?view=history&q=ali").text
+    assert "Nothing paid matches" in seeded.get("/to-pay?view=history&q=bob").text
+    assert "Nothing paid matches" in seeded.get("/to-pay?view=history&game=Other").text
+    assert "Nothing paid matches" in seeded.get("/to-pay?view=history&kind=venue").text
+
+
+def test_old_payout_and_venue_lists_redirect(seeded):
+    for old, new in (("/payouts", "/to-pay?view=history&kind=player"), ("/payouts?status=owed", "/to-pay"),
+                     ("/payouts?q=ali&series=1", "/to-pay?view=history&kind=player&q=ali&series=1"),
+                     ("/venue?status=paid&venue=2", "/to-pay?view=history&kind=venue&venue=2"),
+                     ("/venue?status=owed", "/to-pay")):
+        assert seeded.get(old, follow_redirects=False).headers["location"] == new, old
 
 
 def test_inline_payment_returns_to_page_but_only_locally(seeded):
@@ -137,19 +161,17 @@ def test_venue_flow(seeded):
     assert "Venue&#39;s % of venue fees must be between 0 and 100" in add_venue(seeded, entry_pct="150").text
     assert "Unknown venue" in set_terms(seeded).text
     add_venue(seeded)
-    assert seeded.get("/venue").text.count("Mark paid") == 0
+    assert payee(seeded, "venue", 1) == ""
     assert set_terms(seeded).status_code == 200
-    page = seeded.get("/venue").text
-    assert "The Hall" in page and "$24.00" in page and page.count("Mark paid") == 1
-    for url in ("/", "/series/1", "/tournaments/t1", "/venue?status=owed&series=1"):
+    page = payee(seeded, "venue", 1)
+    assert "The Hall" in page and "$24.00" in page and "venue cut" in page and 'href="/tournaments/t1"' in page
+    for url in ("/", "/series/1", "/tournaments/t1", "/to-pay?view=history&series=1"):
         assert seeded.get(url).status_code == 200
-    assert "to venues" in seeded.get("/").text
-    assert 'href="/tournaments/t1"' in page
 
-    r = seeded.post("/venue/t1/paid", data={"next": "/venue", "note": "bank"}, follow_redirects=False)
-    assert r.headers["location"] == "/venue"
-    assert "Undo" in seeded.get("/venue").text and "bank" in seeded.get("/venue?status=paid").text
-    assert "Mark paid" not in seeded.get("/venue?status=paid").text
+    r = seeded.post("/venue/t1/paid", data={"next": "/to-pay?view=history", "note": "bank"}, follow_redirects=False)
+    assert r.headers["location"] == "/to-pay?view=history"
+    paid = seeded.get("/to-pay?view=history&kind=venue").text
+    assert "Undo" in paid and "bank" in paid and payee(seeded, "venue", 1) == ""
     for bad in ("//evil.example", "https://evil.example", ""):
         r = seeded.post("/venue/t1/paid", data={"next": bad, "undo": "1"}, follow_redirects=False)
         assert r.headers["location"] == "/tournaments/t1", bad
@@ -159,26 +181,23 @@ def test_venue_flow(seeded):
 def test_venues_show_in_to_pay(seeded):
     add_venue(seeded)
     set_terms(seeded)
-    page = seeded.get("/").text
-    owing = page.split('id="to-pay"')[1]
-    assert '<a href="/venues/1">The Hall</a> <span class="tag">venue</span>' in owing and "$24.00" in owing
-    players = owing.count('href="/players/')
-    assert f'<span class="n">· {players + 1}</span>' in owing and f"{players + 1} recipients" in page
+    page = seeded.get("/to-pay").text
+    assert '<a href="/venues/1">The Hall</a> <span class="tag">venue</span>' in page
+    assert "5 transfers" in page and "5 recipients" in seeded.get("/").text
     with db.session() as conn:  # a venue payment whose venue has gone
         conn.execute("UPDATE venue_payment SET venue_id=NULL")
-    owing = seeded.get("/").text.split('id="to-pay"')[1]
-    assert '<a href="/venue?status=owed">(no venue)</a> <span class="tag">venue</span>' in owing
-    seeded.post("/venue/t1/paid")
-    assert "(no venue)" not in seeded.get("/").text
+    assert "(no venue) <span" in payee(seeded, "venue", "none")
+    seeded.post("/to-pay/venue/none/paid", data={"expect": "2400"})
+    assert "(no venue)" not in seeded.get("/to-pay").text
 
 
 def test_tournament_venue_override(seeded):
     add_venue(seeded)
     set_terms(seeded)
     seeded.post("/tournaments/t1/venue", data={"venue_mode": "none"})
-    assert "No venue payments" in seeded.get("/venue").text
+    assert payee(seeded, "venue", 1) == ""
     seeded.post("/tournaments/t1/venue", data={"venue_mode": "custom", "venue_flat": "7"})
-    assert "$7.00" in seeded.get("/venue").text
+    assert "$7.00" in payee(seeded, "venue", 1)
     assert "Venue cut for this tournament" in seeded.get("/tournaments/t1").text
     r = seeded.post("/tournaments/t1/venue", data={"venue_mode": "custom", "venue_flat": "-1"})
     assert "cannot be negative" in r.text
@@ -213,7 +232,6 @@ def test_run_sheet_shows_total_to_pay_to_players_and_venues(seeded):
     page = seeded.get("/").text
     # 4 player payouts ($26 pool) + venue payable ($24.00)
     assert '<span class="k">To pay</span><span class="v">$50.00</span>' in page
-    assert "$26.00 to players + $24.00 to venues" in page
     assert 'href="/tournaments/t1"' in lane(page, "payout") and '<span class="chip owing">$50.00 to pay</span>' in page
     seeded.post("/venue/t1/paid")
     with db.session() as conn:
@@ -243,7 +261,8 @@ def test_series_codes_in_urls_and_links(seeded):
     assert r.status_code == 307 and r.headers["location"] == "/series/FNB?error=boom"
     assert "boom" in seeded.get("/series/1?error=boom").text  # message survives the redirect
     assert seeded.get("/series/ZZZ").status_code == 404
-    for url in ("/", "/series", "/events", "/payouts", "/venue", "/players/u1", "/tournaments/t1", "/events/e1"):
+    for url in ("/", "/series", "/events", "/to-pay", "/to-pay?view=history", "/players/u1", "/tournaments/t1",
+                "/events/e1"):
         page = seeded.get(url).text
         assert 'href="/series/1"' not in page, url
     assert 'href="/series/FNB"' in seeded.get("/events").text
@@ -324,8 +343,7 @@ def test_venues_pages_and_one_off_venue(seeded):
     seeded.post("/tournaments/t1/venue", data={"venue_mode": "series", "venue_id": "2"})
     assert "$50.00" in seeded.get("/venues/2").text and "one-off" in seeded.get("/venues/2").text
     assert "No tournaments held here" in seeded.get("/venues/1").text
-    page = seeded.get("/venue?venue=2").text
-    assert "Pop-up Bar" in page and "$50.00" in page and "$24.00" not in seeded.get("/venue?venue=2").text
+    assert "$50.00" in payee(seeded, "venue", 2) and payee(seeded, "venue", 1) == ""
 
 
 def test_editing_a_venue_reprices_unpaid_but_not_paid(seeded):
@@ -336,7 +354,7 @@ def test_editing_a_venue_reprices_unpaid_but_not_paid(seeded):
     page = seeded.get("/venues/1").text
     assert "$24.00" in page and "≠ $34.00" in page  # paid amount kept, new maths flagged
     seeded.post("/venue/t1/paid", data={"undo": "1"})
-    assert "$34.00" in seeded.get("/venue?status=owed").text
+    assert "$34.00" in payee(seeded, "venue", 1)
     assert "Enter a venue name" in seeded.post("/venues/1", data={"name": " "}).text
     assert seeded.get("/venues/99").status_code == 404
 
@@ -354,13 +372,13 @@ def test_series_terms_over_time(seeded):
     assert str(r.url).endswith("/series/FNB?period=2") and "terms from 2025-12-01" in r.text
     assert "Terms already start on 2025-12-01" in seeded.post(
         "/series/1/periods", data={"starts_on": "2025-12-01"}).text
-    assert "New Place" in seeded.get("/tournaments/t1").text and "$30.00" in seeded.get("/venue").text
+    assert "New Place" in seeded.get("/tournaments/t1").text and "$30.00" in payee(seeded, "venue", 2)
     assert "$26.00" in seeded.get("/events/e1").text  # same rule as before, copied into the new terms
 
     # change only the new terms' rule; the first terms keep theirs
     seeded.post("/series/1/rules", data={"period_id": "2", "game_name": "Smash Ultimate", "bracket_fee": "5",
                                          "payout_places": 1, "fixed_pool": "0", "splits": "100"})
-    assert seeded.get("/payouts").text.count("Mark paid") == 0  # the new rule's pool is $0
+    assert 'class="payee" id="player-' not in seeded.get("/to-pay").text  # the new rule's pool is $0
     page = seeded.get("/series/FNB?period=1").text
     assert "terms from the start" in page and "50 / 30 / 20" in page
     assert "1 paid (100)" in seeded.get("/games/Smash%20Ultimate").text
@@ -368,7 +386,7 @@ def test_series_terms_over_time(seeded):
     # moving the new terms after t1's date gives t1 its old venue and rule back
     seeded.post("/periods/2", data={"starts_on": "2026-06-01", "venue_id": "2", "entry_fee": "8"})
     assert "The Hall" in seeded.get("/tournaments/t1").text and "$26.00" in seeded.get("/events/e1").text
-    assert seeded.get("/payouts").text.count("Mark paid") == 4
+    assert seeded.get("/to-pay").text.count('class="payee" id="player-') == 4
     assert "is not a date" in seeded.post("/periods/2", data={"starts_on": ""}).text
     seeded.post("/periods/2/delete")
     assert 'action="/periods/2"' not in seeded.get("/series/FNB").text

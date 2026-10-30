@@ -1,0 +1,46 @@
+{% extends "base.html" %}{% import "_macros.html" as m %}{% block title %}To pay · The Pot{% endblock %}{% block body %}
+<h1>To pay</h1>
+<div class="tabs"><a href="/to-pay" class="{{ 'on' if view == 'owed' }}">Owed</a><a href="/to-pay?view=history" class="{{ 'on' if view == 'history' }}">Paid</a></div>
+{% if view == "owed" %}
+<div class="tiles">
+<div class="tile{{ ' acc' if total }}"><span class="k">To pay</span><span class="v">{{ total|money }}</span>
+<span class="s">{% if recipients %}{{ recipients|length }} transfer{{ "s" if recipients|length != 1 }}{% else %}nobody is owed anything{% endif %}</span></div>
+<a class="tile" href="/bank"><span class="k">Bank</span><span class="v">{% if bank.estimate is not none %}{{ bank.estimate|money }}{% else %}?{% endif %}</span>
+<span class="s">{% if bank.last %}estimated, reconciled {% if bank.days == 0 %}today{% else %}{{ bank.days }} day{{ "s" if bank.days != 1 }} ago{% endif %}{% else %}not reconciled yet{% endif %}{% if bank.in_transit %} · {{ bank.in_transit|money }} on its way from Square{% endif %}</span></a>
+{% if bank.estimate is not none and total %}{% set left = bank.estimate - total %}<div class="tile{{ ' owing' if left < 0 else ' paid' }}"><span class="k">Left after paying</span><span class="v">{{ left|money }}</span>
+<span class="s">{% if left < 0 %}not enough in the bank yet{% if bank.in_transit %}: wait for Square's deposit{% endif %}{% else %}enough to pay everyone{% endif %}</span></div>{% endif %}
+</div>
+{% for x in recipients %}<section class="payee" id="{{ x.kind }}-{{ x.id }}"><header>
+<h2>{% if x.kind == "player" %}{{ m.player(x.id, x.name) }}{% elif x.id != "none" %}{{ m.venue(x.id, x.name) }}{% else %}{{ x.name }}{% endif %}{% if x.kind == "venue" %} <span class="tag">venue</span>{% endif %}</h2>
+<span class="amt">{{ x.cents|money }}</span></header>
+{% if x.owes_us %}<p class="strip">{{ x.name }} also owes us {{ x.owes_us|money }}. <a href="/owed">Settle that on Owed to us</a> first if you're taking it out of this payment, then pay the rest.</p>{% endif %}
+<div class="tw"><table><tbody>
+{% for l in x.lines %}<tr><td>{{ l.start_date|shortday }}</td><td>{{ m.tournament(l.tid, l.tname) }}</td>
+<td>{% if l.kind == "player" %}{{ l.placement|ordinal }} in {{ l.ename }}{% else %}venue cut{% endif %}</td>
+<td class="r">{{ l.amount_cents|money }}{{ m.discrepancy(l.amount_cents, l.computed_cents) }}</td></tr>{% endfor %}
+</tbody></table></div>
+<form method="post" action="/to-pay/{{ x.kind }}/{{ x.id|urlq }}/paid" class="toolbar"><input type="hidden" name="expect" value="{{ x.cents }}">
+<label>Sent on<input type="date" name="paid_on" max="{{ today }}" title="The day it left the bank (blank: today)"></label>
+<label>Note<input name="note" size="16" placeholder="e.g. bank transfer"></label>
+<button>Paid {{ x.cents|money }}</button></form></section>
+{% else %}<p class="empty">Nobody is owed anything.</p>{% endfor %}
+<p class="help">Each player and venue is one bank transfer for everything they're owed. Send it from the bank, then mark it paid with the day it left: the bank page then expects it to have gone out. To pay one line on its own, use the tournament's Payouts step.</p>
+{% else %}
+<form method="get" class="toolbar"><input type="hidden" name="view" value="history">
+<label>Who<select name="kind"><option value="">everyone</option><option value="player" {{ "selected" if f_kind == "player" }}>players</option><option value="venue" {{ "selected" if f_kind == "venue" }}>venues</option></select></label>
+<label>Name<input name="q" value="{{ f_q }}" size="12"></label>
+<label>Series<select name="series"><option value="">all</option>{% for s in series_opts %}<option value="{{ s.id }}" {{ "selected" if f_series == s.id }}>{{ s.code }} · {{ s.name }}</option>{% endfor %}</select></label>
+<label>Venue<select name="venue"><option value="">all</option>{% for v in venue_opts %}<option value="{{ v.id }}" {{ "selected" if f_venue == v.id }}>{{ v.name }}</option>{% endfor %}</select></label>
+<label>Game<select name="game"><option value="">all</option>{% for g in game_opts %}<option {{ "selected" if f_game == g }}>{{ g }}</option>{% endfor %}</select></label>
+<button class="sec">Apply</button></form>
+<div class="summary"><span><b>{{ rows|length }}</b> paid{% if rows|length == limit %} (the latest {{ limit }}){% endif %}</span><span><b>{{ paid|money }}</b> in all</span></div>
+<div class="tw"><table class="sortable"><thead><tr><th>Sent</th><th>To</th><th>Tournament</th><th>For</th><th class="r">Amount</th><th>Note</th><th></th></tr></thead><tbody>
+{% for r in rows %}<tr><td>{{ r.paid_on or (r.paid_at or "")[:10] }}</td>
+<td>{% if r.kind == "player" %}{{ m.player(r.recipient_id, r.recipient) }}{% elif r.recipient_id %}{{ m.venue(r.recipient_id, r.recipient) }} <span class="tag">venue</span>{% else %}{{ r.recipient }} <span class="tag">venue</span>{% endif %}</td>
+<td>{{ m.tournament(r.tid, r.tname) }} <span class="mut">{{ r.start_date|shortday }}</span></td>
+<td>{% if r.kind == "player" %}{{ r.placement|ordinal }} in {{ r.ename }}{% if r.game_name %} <span class="mut">{{ r.game_name }}</span>{% endif %}{% else %}venue cut{% endif %}</td>
+<td class="r" data-v="{{ r.amount_cents }}">{{ r.amount_cents|money }}</td><td class="mut">{{ r.note }}</td>
+<td>{% if r.reconciliation_id %}<span class="chip locked">reconciled</span>{% elif r.kind == "player" %}{{ m.paybtn(r.key, "paid", here) }}{% else %}{{ m.venuebtn(r.key, "paid", here) }}{% endif %}</td></tr>
+{% else %}<tr><td colspan="7" class="empty">Nothing paid matches.</td></tr>{% endfor %}</tbody></table></div>
+{% endif %}
+{% endblock %}

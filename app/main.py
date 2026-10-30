@@ -8,7 +8,7 @@ from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import auth, config, db, mail, square
-from .routes import bank, home, login, owed, records, series, setup, tournaments
+from .routes import bank, home, login, owed, records, series, setup, topay, tournaments
 from .web import BASE, square_client
 
 
@@ -69,6 +69,6 @@ def healthz():
     return PlainTextResponse("ok")
 
 
-for _router in (login.router, home.router, owed.router, series.router, tournaments.router, bank.router, setup.router,
+for _router in (login.router, home.router, owed.router, topay.router, series.router, tournaments.router, bank.router, setup.router,
                 records.router):
     app.include_router(_router)

@@ -1,7 +1,7 @@
 {% extends "base.html" %}{% import "_macros.html" as m %}{% block body %}
 <h1>Venues</h1>
 <div class="summary"><span><b>{{ venues|length }}</b> venues</span><span><b class="warn">{{ venues|sum(attribute="owed")|money }}</b> owed</span><span><b class="ok">{{ venues|sum(attribute="paid")|money }}</b> paid</span>
-<span><a href="/venue">All venue payments</a></span></div>
+<span><a href="/to-pay?view=history&amp;kind=venue">Venue payments made</a></span></div>
 <table class="sortable"><thead><tr><th>Venue</th><th>Cut</th><th class="r">Series</th><th class="r">Tournaments</th><th>Last held</th><th class="r">Owed</th><th class="r">Paid</th></tr></thead><tbody>
 {% for v in venues %}<tr><td>{{ m.venue(v.id, v.name) }}</td><td>{{ v.flat_cents|money }} + {{ v.entry_pct }}% entry + {{ v.bracket_pct }}% bracket</td>
 <td class="r">{{ v.series }}</td><td class="r">{{ v.tournaments }}</td><td>{{ v.last_date or "" }}</td>{{ m.mtd(v.owed, "warn") }}{{ m.mtd(v.paid, "ok") }}</tr>

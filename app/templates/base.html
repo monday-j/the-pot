@@ -7,17 +7,16 @@
 {% block nav %}<nav><a class="brand" href="/"><img src="/static/favicon.svg" alt="" width="18" height="18">The Pot</a>
 <a href="/" class="{{ 'on' if path == '/' }}">Run sheet</a>
 <a href="/owed" class="{{ 'on' if path.startswith('/owed') }}">Owed to us</a>
-<a href="/#to-pay">To pay</a>
+<a href="/to-pay" class="{{ 'on' if path.startswith('/to-pay') }}">To pay</a>
 <a href="/bank" class="{{ 'on' if path.startswith('/bank') }}">Bank</a>
 <span class="sep"></span>
-{% set in_records = path.startswith(('/series', '/tournaments', '/events', '/games', '/players', '/payouts', '/venue')) %}<a href="/series" class="{{ 'on' if in_records }}">Records</a>
+{% set in_records = path.startswith(('/series', '/tournaments', '/events', '/games', '/players', '/venue')) %}<a href="/series" class="{{ 'on' if in_records }}">Records</a>
 <a href="/square/items" class="{{ 'on' if path.startswith(('/square', '/setup')) }}">Setup</a>
 <form class="logout" method="post" action="/logout"><button>Log out</button></form></nav>{% if in_records %}<nav class="sub"><a href="/series" class="{{ 'on' if path.startswith(('/series', '/tournaments')) }}">Series</a>
 <a href="/players" class="{{ 'on' if path.startswith('/players') }}">Players</a>
 <a href="/venues" class="{{ 'on' if path.startswith('/venue') }}">Venues</a>
 <a href="/events" class="{{ 'on' if path.startswith('/events') }}">Events</a>
-<a href="/games" class="{{ 'on' if path.startswith('/games') }}">Games</a>
-<a href="/payouts" class="{{ 'on' if path.startswith('/payouts') }}">Payouts</a></nav>{% endif %}{% endblock %}
+<a href="/games" class="{{ 'on' if path.startswith('/games') }}">Games</a></nav>{% endif %}{% endblock %}
 <main>
 {% block crumbs %}{% endblock %}
 {% if error %}<div class="strip err">{{ error }}</div>{% endif %}

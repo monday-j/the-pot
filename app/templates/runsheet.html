@@ -6,7 +6,7 @@
 <div class="tiles">
 <a class="tile{{ ' owing' if owed.cents }}" href="/owed"><span class="k">Owed to us</span><span class="v">{{ owed.cents|money }}</span>
 <span class="s">{% if owed.players %}{{ owed.players|length }} player{{ "s" if owed.players|length != 1 }} · oldest {{ owed.oldest_days }} day{{ "s" if owed.oldest_days != 1 }}{% else %}nobody owes anything{% endif %}{% if owed.credit %} · {{ owed.credit|money }} credit held{% endif %}</span></a>
-<a class="tile{{ ' acc' if topay.cents }}" href="#to-pay"><span class="k">To pay</span><span class="v">{{ topay.cents|money }}</span>
+<a class="tile{{ ' acc' if topay.cents }}" href="/to-pay"><span class="k">To pay</span><span class="v">{{ topay.cents|money }}</span>
 <span class="s">{% if topay.recipients %}{{ topay.recipients|length }} recipient{{ "s" if topay.recipients|length != 1 }}{% if bank.estimate is not none %} · {% if topay.cents > bank.estimate %}<span class="neg">more than the {{ bank.estimate|money }} in the bank</span>{% else %}{{ (bank.estimate - topay.cents)|money }} left in the bank after{% endif %}{% endif %}{% else %}nobody is owed anything{% endif %}</span></a>
 <a class="tile" href="/bank"><span class="k">Bank</span><span class="v">{% if bank.estimate is not none %}{{ bank.estimate|money }}{% else %}?{% endif %}</span>
 <span class="s">{% if bank.last %}reconciled {% if bank.days == 0 %}today{% else %}{{ bank.days }} day{{ "s" if bank.days != 1 }} ago{% endif %}{% else %}not reconciled yet: enter the opening balance{% endif %}{% if bank.in_transit %} · {{ bank.in_transit|money }} on its way from Square{% endif %}</span></a>
@@ -33,9 +33,4 @@
 </section>{% endfor %}
 </div>
 
-<h2 id="to-pay">To pay <span class="n">· {{ topay.recipients|length }}</span></h2>
-<div class="tw"><table class="sortable"><thead><tr><th>Player or venue</th><th class="r" title="Payouts owed to a player, or tournaments a venue is owed for">Payments</th><th>Oldest</th><th class="r">Owed</th></tr></thead><tbody>
-{% for p in topay.recipients %}<tr><td>{% if not p.venue %}{{ m.player(p.id, p.name) }}{% else %}{% if p.id %}{{ m.venue(p.id, p.name) }}{% else %}<a href="/venue?status=owed">{{ p.name }}</a>{% endif %} <span class="tag">venue</span>{% endif %}</td><td class="r">{{ p.n }}</td><td>{{ p.since|shortday }}</td>{{ m.mtd(p.owed) }}</tr>
-{% else %}<tr><td colspan="4" class="empty">Nobody is owed anything.</td></tr>{% endfor %}</tbody>
-{% if topay.recipients %}<tfoot><tr><td colspan="3">{{ topay.players_cents|money }} to players + {{ topay.venues_cents|money }} to venues</td>{{ m.mtd(topay.cents) }}</tr></tfoot>{% endif %}</table></div>
 {% endblock %}

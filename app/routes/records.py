@@ -7,8 +7,7 @@ from fastapi.responses import RedirectResponse
 
 from .. import bank, db, sync
 from ..payouts import RuleError, compute_payouts, pool_breakdown
-from ..web import (EVENT_SUMS, SERIES_SUMS, TOURNAMENT_SUMS, back, one, parse_date, parse_venue, render, safe_next,
-                   venue_options)
+from ..web import EVENT_SUMS, SERIES_SUMS, TOURNAMENT_SUMS, back, one, parse_date, parse_venue, render, safe_next
 
 router = APIRouter()
 
@@ -108,30 +107,6 @@ def game_page(request: Request, name: str):
     if not events and not rules:
         raise HTTPException(404)
     return render(request, "game.html", game_name=name, events=events, rules=rules, players=players)
-
-
-@router.get("/payouts")
-def payouts_page(request: Request, status: str = "", series: int | None = None, game: str = "", q: str = ""):
-    sql = """SELECT po.*, p.gamer_tag, e.id AS eid, e.name AS ename, e.game_name, t.id AS tid, t.name AS tname,
-                    t.start_date, t.series_id, s.name AS sname, s.code AS scode
-             FROM payout po JOIN player p ON p.id=po.player_id JOIN event e ON e.id=po.event_id
-             JOIN tournament t ON t.id=e.tournament_id LEFT JOIN series s ON s.id=t.series_id WHERE 1=1"""
-    args = []
-    for clause, value in ((" AND po.status=?", status if status in ("owed", "paid") else ""),
-                          (" AND t.series_id=?", series), (" AND e.game_name=?", game),
-                          (" AND p.gamer_tag LIKE ?", f"%{q}%" if q else "")):
-        if value not in ("", None):
-            sql += clause
-            args.append(value)
-    with db.session() as conn:
-        rows = conn.execute(sql + " ORDER BY t.start_date DESC, e.name, po.placement, p.gamer_tag COLLATE NOCASE",
-                            args).fetchall()
-        series_opts = conn.execute("SELECT id, name, code FROM series ORDER BY name").fetchall()
-        game_opts = [r[0] for r in conn.execute("SELECT DISTINCT game_name FROM event ORDER BY 1")]
-    return render(request, "payouts.html", rows=rows, series_opts=series_opts, game_opts=game_opts,
-                  f_status=status, f_series=series, f_game=game, f_q=q,
-                  owed=sum(r["amount_cents"] for r in rows if r["status"] == "owed"),
-                  paid=sum(r["amount_cents"] for r in rows if r["status"] == "paid"))
 
 
 @router.get("/players")
@@ -328,32 +303,6 @@ def update_venue(venue_id: int, name: str = Form(...), notes: str = Form(""), fl
     except RuleError as e:
         return back(f"/venues/{venue_id}", str(e))
     return back(f"/venues/{venue_id}")
-
-
-@router.get("/venue")
-def venue_page(request: Request, status: str = "", series: int | None = None, venue: int | None = None):
-    sql = """SELECT vp.*, t.id AS tid, t.name AS tname, t.start_date, t.series_id, s.name AS sname, s.code AS scode,
-                    v.name AS venue_name
-             FROM venue_payment vp JOIN tournament t ON t.id=vp.tournament_id
-             LEFT JOIN series s ON s.id=t.series_id LEFT JOIN venue v ON v.id=vp.venue_id WHERE 1=1"""
-    args = []
-    for clause, value in ((" AND vp.status=?", status if status in ("owed", "paid") else ""),
-                          (" AND t.series_id=?", series), (" AND vp.venue_id=?", venue)):
-        if value not in ("", None):
-            sql += clause
-            args.append(value)
-    with db.session() as conn:
-        rows = []
-        for r in conn.execute(sql + " ORDER BY t.start_date DESC, t.name", args).fetchall():
-            info = sync.venue_inputs(conn, r["tid"])
-            rows.append({"r": r, "entry": info["entry_collected"] if info else 0,
-                         "bracket": info["bracket_collected"] if info else 0})
-        series_opts = conn.execute("SELECT id, name, code FROM series ORDER BY name").fetchall()
-        venue_opts = venue_options(conn)
-    return render(request, "venue.html", rows=rows, series_opts=series_opts, venue_opts=venue_opts,
-                  f_status=status, f_series=series, f_venue=venue,
-                  owed=sum(x["r"]["amount_cents"] for x in rows if x["r"]["status"] == "owed"),
-                  paid=sum(x["r"]["amount_cents"] for x in rows if x["r"]["status"] == "paid"))
 
 
 @router.post("/venue/{tournament_id}/paid")

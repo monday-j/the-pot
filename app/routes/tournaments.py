@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter, Form, HTTPException, Request
 
-from .. import bank, db, ledger, runsheet, square, sync
+from .. import audit, bank, db, ledger, runsheet, square, sync
 from ..payouts import RuleError, venue_breakdown
 from ..square_client import SquareConfigError
 from ..web import (EVENT_SUMS, NO_SQUARE, back, dollars_to_cents, one, parse_venue, pick_venue, render, safe_next,
@@ -247,11 +247,12 @@ def tournament_page(request: Request, tournament_id: str):
                                   WHERE e.tournament_id=? ORDER BY e.name, po.placement""", (tournament_id,)).fetchall()
         players = conn.execute("""SELECT id, gamer_tag FROM player WHERE merged_into IS NULL
                                   ORDER BY gamer_tag COLLATE NOCASE""").fetchall()
+        log = audit.entries(conn, tournament_id=tournament_id)
     prizes = sum(p["amount_cents"] for p in payouts)
     venue_cents = venue["payment"]["amount_cents"] if venue and venue["payment"] else 0
     return render(request, "tournament.html", t=t, events=events, attendees=list(attendees.values()), venue=venue,
                   venues=venues, recon=recon, square_setup=square_setup(), meanings=square.MEANINGS, players=players,
                   states=ledger.STATES, settle_methods={**ledger.RECEIPT_METHODS, **ledger.CHARGE_METHODS},
-                  card=card, stages=runsheet.STAGES, suggestions=suggestions, locked_through=locked_through, payouts=payouts, prizes=prizes, venue_cents=venue_cents,
+                  card=card, stages=runsheet.STAGES, suggestions=suggestions, log=log, actions=audit.ACTIONS, locked_through=locked_through, payouts=payouts, prizes=prizes, venue_cents=venue_cents,
                   to_pay=sum(p["amount_cents"] for p in payouts if p["status"] == "owed")
                   + (venue_cents if venue and venue["payment"] and venue["payment"]["status"] == "owed" else 0))

@@ -14,7 +14,7 @@ up to its date lock too once they're clear of issues (square.lock_clear_tourname
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
-from . import config
+from . import audit, config
 from .payouts import RuleError
 
 # What money through the bank that nothing else records was (#39).
@@ -128,6 +128,8 @@ def reconcile(conn, day: str, balance_cents: int, note: str, anyway: bool = Fals
                           VALUES (?,?,?,?,?)""",
                        (day, balance_cents, balance_cents if e["expected"] is None else e["expected"] - e["adjusted"],
                         note.strip(), _stamp())).lastrowid
+    audit.record(conn, "reconciled", balance_cents, day + (f": {note.strip()}" if note.strip() else ""),
+                 ref=f"reconciliation:{rid}")
     conn.executemany("UPDATE bank_deposit SET reconciliation_id=? WHERE id=?", [(rid, d["id"]) for d in e["deposits"]])
     conn.executemany("UPDATE receipt SET reconciliation_id=? WHERE id=?", [(rid, r["id"]) for r in e["receipts"]])
     conn.executemany("UPDATE bank_adjustment SET reconciliation_id=? WHERE id=?",
@@ -144,6 +146,7 @@ def undo_latest(conn):
     if last is None:
         raise RuleError("There's no reconciliation to undo")
     conn.execute("DELETE FROM reconciliation WHERE id=?", (last["id"],))
+    audit.record(conn, "reconcile_undone", last["balance_cents"], last["reconciled_on"], ref=f"reconciliation:{last['id']}")
 
 
 def add_adjustment(conn, day: str, cents: int, category: str, note: str = "") -> int:
@@ -157,8 +160,11 @@ def add_adjustment(conn, day: str, cents: int, category: str, note: str = "") ->
     if day > today():
         raise RuleError("That day hasn't happened yet")
     check_open(conn, day)
-    return conn.execute("""INSERT INTO bank_adjustment (occurred_on, amount_cents, category, note, created_at)
-                           VALUES (?,?,?,?,?)""", (day, cents, category, note.strip(), _stamp())).lastrowid
+    aid = conn.execute("""INSERT INTO bank_adjustment (occurred_on, amount_cents, category, note, created_at)
+                          VALUES (?,?,?,?,?)""", (day, cents, category, note.strip(), _stamp())).lastrowid
+    audit.record(conn, "adjustment", cents, f"{day}: {CATEGORIES[category]}" + (f", {note.strip()}" if note.strip()
+                                                                               else ""), ref=f"adjustment:{aid}")
+    return aid
 
 
 def update_adjustment(conn, adjustment_id: int, category: str, note: str):
@@ -169,6 +175,8 @@ def update_adjustment(conn, adjustment_id: int, category: str, note: str):
     if not conn.execute("SELECT 1 FROM bank_adjustment WHERE id=?", (adjustment_id,)).fetchone():
         raise RuleError("Unknown adjustment")
     conn.execute("UPDATE bank_adjustment SET category=?, note=? WHERE id=?", (category, note.strip(), adjustment_id))
+    audit.record(conn, "adjustment_changed", None, CATEGORIES[category] + (f", {note.strip()}" if note.strip() else ""),
+                 ref=f"adjustment:{adjustment_id}")
 
 
 def delete_adjustment(conn, adjustment_id: int):
@@ -178,6 +186,8 @@ def delete_adjustment(conn, adjustment_id: int):
     if a["reconciliation_id"] is not None:
         raise RuleError(locked_message(conn, a["reconciliation_id"]))
     conn.execute("DELETE FROM bank_adjustment WHERE id=?", (adjustment_id,))
+    audit.record(conn, "adjustment_removed", a["amount_cents"], f"{a['occurred_on']}: {CATEGORIES[a['category']]}",
+                 ref=f"adjustment:{adjustment_id}")
 
 
 PAYABLES = {"payout": "id", "venue_payment": "tournament_id"}
@@ -190,6 +200,7 @@ def mark_paid(conn, table: str, key, day: str, note: str = ""):
     check_open(conn, day)
     conn.execute(f"UPDATE {table} SET status='paid', paid_at=?, paid_on=?, note=? WHERE {PAYABLES[table]}=?",
                  (_stamp(), day, note.strip(), key))
+    _audit_payable(conn, table, key, "paid", f"sent {day}" + (f": {note.strip()}" if note.strip() else ""))
 
 
 def mark_owed(conn, table: str, key):
@@ -197,8 +208,22 @@ def mark_owed(conn, table: str, key):
     row = conn.execute(f"SELECT reconciliation_id FROM {table} WHERE {PAYABLES[table]}=?", (key,)).fetchone()
     if row and row[0]:
         raise RuleError(locked_message(conn, row[0]))
+    _audit_payable(conn, table, key, "owed")
     conn.execute(f"""UPDATE {table} SET status='owed', paid_at=NULL, paid_on=NULL, amount_cents=computed_cents
                      WHERE {PAYABLES[table]}=?""", (key,))
+
+
+def _audit_payable(conn, table: str, key, status: str, detail: str = ""):
+    if table == "payout":
+        r = conn.execute("""SELECT po.amount_cents, po.player_id, po.placement, e.tournament_id, e.name FROM payout po
+                            JOIN event e ON e.id=po.event_id WHERE po.id=?""", (key,)).fetchone()
+        if r:
+            audit.record(conn, f"payout_{status}", r["amount_cents"], f"place {r['placement']} in {r['name']}"
+                         + (f", {detail}" if detail else ""), r["tournament_id"], r["player_id"], f"payout:{key}")
+    else:
+        r = conn.execute("SELECT amount_cents FROM venue_payment WHERE tournament_id=?", (key,)).fetchone()
+        if r:
+            audit.record(conn, f"venue_{status}", r["amount_cents"], detail, key, ref="venue")
 
 
 def migrate_differences(conn):
@@ -258,10 +283,12 @@ def save_deposit(conn, deposit_id, deposited_on: str, amount_cents: int, referen
     check_open(conn, deposited_on)
     values = (deposited_on, amount_cents, reference.strip(), note.strip())
     if deposit_id is None:
-        return conn.execute("INSERT INTO bank_deposit (deposited_on, amount_cents, reference, note) VALUES (?,?,?,?)",
-                            values).lastrowid
-    conn.execute("UPDATE bank_deposit SET deposited_on=?, amount_cents=?, reference=?, note=? WHERE id=?",
-                 (*values, deposit_id))
+        deposit_id = conn.execute("INSERT INTO bank_deposit (deposited_on, amount_cents, reference, note) "
+                                  "VALUES (?,?,?,?)", values).lastrowid
+    else:
+        conn.execute("UPDATE bank_deposit SET deposited_on=?, amount_cents=?, reference=?, note=? WHERE id=?",
+                     (*values, deposit_id))
+    audit.record(conn, "deposit", amount_cents, f"{deposited_on} {reference.strip()}", ref=f"deposit:{deposit_id}")
     return deposit_id
 
 

@@ -5,7 +5,7 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, Form, Request
 
-from .. import bank, db, ledger, square
+from .. import audit, bank, db, ledger, square
 from ..payouts import RuleError
 from ..web import NO_SQUARE, back, dollars_to_cents, one, parse_date, render, square_client, square_setup
 
@@ -183,4 +183,5 @@ def delete_deposit(deposit_id: int):
         if d["reconciliation_id"]:
             return back(f"/bank/{deposit_id}", bank.locked_message(conn, d["reconciliation_id"]))
         conn.execute("DELETE FROM bank_deposit WHERE id=?", (deposit_id,))
+        audit.record(conn, "deposit_removed", d["amount_cents"], d["deposited_on"], ref=f"deposit:{deposit_id}")
     return back("/bank")

@@ -1,0 +1,7 @@
+{% extends "base.html" %}{% import "_macros.html" as m %}{% block title %}History · The Pot{% endblock %}{% block body %}
+<h1>History</h1>
+<form method="get" class="toolbar"><label>What<select name="action" data-autosubmit><option value="">everything</option>
+{% for k, label in actions.items() %}<option value="{{ k }}" {{ "selected" if f_action == k }}>{{ label }}</option>{% endfor %}</select></label><noscript><button class="sec">Apply</button></noscript></form>
+{% set log = rows %}{% include "_audit.html" %}
+<p class="help">Every change to money: marking prizes and venues paid, settling entrants, payments outside Square, credit, bank explanations, deposits and reconciliations, with when it happened and the address it came from{% if rows|length == limit %}. The latest {{ limit }} are shown{% endif %}.</p>
+{% endblock %}

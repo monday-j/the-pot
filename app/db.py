@@ -287,6 +287,20 @@ CREATE TABLE IF NOT EXISTS settlement (
 );
 CREATE INDEX IF NOT EXISTS idx_settlement_tournament ON settlement(tournament_id);
 -- Small bits of state that must survive restarts, e.g. when the weekly reminder was last sent (mail.py).
+-- Money actions (#48): when, from which client address, what, and the tournament and player it was about.
+CREATE TABLE IF NOT EXISTS audit_log (
+    id INTEGER PRIMARY KEY,
+    at TEXT NOT NULL,
+    client TEXT NOT NULL DEFAULT '',
+    action TEXT NOT NULL,
+    tournament_id TEXT,
+    player_id TEXT,
+    ref TEXT NOT NULL DEFAULT '',
+    cents INTEGER,
+    detail TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS audit_log_tournament ON audit_log(tournament_id);
+CREATE INDEX IF NOT EXISTS audit_log_player ON audit_log(player_id);
 CREATE TABLE IF NOT EXISTS app_state (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL

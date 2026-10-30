@@ -1,0 +1,7 @@
+{% import "_macros.html" as m %}{# The audit log entries in `log` (#48), for the History page and a record's own history. #}
+<div class="tw"><table><thead><tr><th>When</th><th>What</th><th>Tournament</th><th>Player</th><th class="r">Amount</th><th>Detail</th><th>From</th></tr></thead><tbody>
+{% for a in log %}<tr><td>{{ a.at|localtime }}</td><td>{{ actions.get(a.action, a.action) }}</td>
+<td>{% if a.tournament_id %}{{ m.tournament(a.tournament_id, a.tname or a.tournament_id) }}{% endif %}</td>
+<td>{% if a.player_id %}{{ m.player(a.player_id, a.gamer_tag or a.player_id) }}{% endif %}</td>
+<td class="r">{% if a.cents is not none %}{{ a.cents|money }}{% endif %}</td><td>{{ a.detail }}</td><td class="mut">{{ a.client }}</td></tr>
+{% else %}<tr><td colspan="7" class="empty">Nothing recorded yet.</td></tr>{% endfor %}</tbody></table></div>

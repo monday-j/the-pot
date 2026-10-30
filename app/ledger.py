@@ -24,7 +24,7 @@ off.
 import json
 import sys
 
-from . import bank, db, square, sync
+from . import audit, bank, db, square, sync
 from .payouts import RuleError
 
 # Decisions made by hand, by what they do.
@@ -332,9 +332,13 @@ def settle(conn, tournament_id: str, player_id: str, method: str, cents: int, re
         raise RuleError("They don't owe anything for this tournament")
     if cents > c["balance"]:
         raise RuleError(f"They only owe {c['balance'] / 100:.2f}")
-    return conn.execute("""INSERT INTO settlement (tournament_id, player_id, method, amount_cents, paid_by, reason,
-                           settled_on, created_at) VALUES (?,?,?,?,?,?,?,?)""",
-                        (tournament_id, pid, method, cents, paid_by, reason.strip(), day, sync.now())).lastrowid
+    sid = conn.execute("""INSERT INTO settlement (tournament_id, player_id, method, amount_cents, paid_by, reason,
+                          settled_on, created_at) VALUES (?,?,?,?,?,?,?,?)""",
+                       (tournament_id, pid, method, cents, paid_by, reason.strip(), day, sync.now())).lastrowid
+    payer = conn.execute("SELECT gamer_tag FROM player WHERE id=?", (paid_by,)).fetchone() if paid_by else None
+    audit.record(conn, "settled", cents, CHARGE_METHODS[method] + (f" ({payer[0]})" if payer else "")
+                 + (f": {reason.strip()}" if reason.strip() else ""), tournament_id, pid, f"settlement:{sid}")
+    return sid
 
 
 def write_off_gap(conn, tournament_id: str, reason: str, day: str | None = None) -> int:
@@ -346,9 +350,11 @@ def write_off_gap(conn, tournament_id: str, reason: str, day: str | None = None)
     gap = books(conn)["tournaments"].get(tournament_id, {}).get("gap", 0)
     if not gap:
         raise RuleError("Nothing is missing from this tournament")
-    return conn.execute("""INSERT INTO settlement (tournament_id, method, amount_cents, reason, settled_on, created_at)
-                           VALUES (?,?,?,?,?,?)""",
-                        (tournament_id, "written_off", gap, reason.strip(), day, sync.now())).lastrowid
+    sid = conn.execute("""INSERT INTO settlement (tournament_id, method, amount_cents, reason, settled_on, created_at)
+                          VALUES (?,?,?,?,?,?)""",
+                       (tournament_id, "written_off", gap, reason.strip(), day, sync.now())).lastrowid
+    audit.record(conn, "gap_written_off", gap, reason, tournament_id, ref=f"settlement:{sid}")
+    return sid
 
 
 def point_payment(conn, payment_id: str, tournament_id: str, cents: int, day: str | None = None) -> int:
@@ -382,8 +388,11 @@ def use_credit(conn, player_id: str, method: str, cents: int, reason: str = "", 
     left = books(conn)["credit"].get(pid, 0)
     if cents > left:
         raise RuleError(f"They only have {left / 100:.2f} of credit")
-    return conn.execute("""INSERT INTO settlement (player_id, method, amount_cents, reason, settled_on, created_at)
-                           VALUES (?,?,?,?,?,?)""", (pid, method, cents, reason.strip(), day, sync.now())).lastrowid
+    sid = conn.execute("""INSERT INTO settlement (player_id, method, amount_cents, reason, settled_on, created_at)
+                          VALUES (?,?,?,?,?,?)""", (pid, method, cents, reason.strip(), day, sync.now())).lastrowid
+    audit.record(conn, "credit_used", cents, CREDIT_METHODS[method] + (f": {reason.strip()}" if reason.strip() else ""),
+                 player_id=pid, ref=f"settlement:{sid}")
+    return sid
 
 
 def delete_settlement(conn, settlement_id: int):
@@ -392,6 +401,8 @@ def delete_settlement(conn, settlement_id: int):
         raise RuleError("Unknown settlement")
     bank.check_open(conn, s["settled_on"])
     conn.execute("DELETE FROM settlement WHERE id=?", (settlement_id,))
+    audit.record(conn, "settlement_undone", s["amount_cents"], {**CHARGE_METHODS, **CREDIT_METHODS}.get(
+        s["method"], s["method"]), s["tournament_id"], s["player_id"], f"settlement:{settlement_id}")
 
 
 def add_receipt(conn, player_id: str, method: str, cents: int, day: str, tournament_id: str | None = None,
@@ -404,10 +415,14 @@ def add_receipt(conn, player_id: str, method: str, cents: int, day: str, tournam
     if day > bank.today():
         raise RuleError("That day hasn't happened yet")
     bank.check_open(conn, day)
-    return conn.execute("""INSERT INTO receipt (player_id, method, received_on, amount_cents, tournament_id, reference,
-                           note, created_at) VALUES (?,?,?,?,?,?,?,?)""",
-                        (pid, method, day, cents, tournament_id or None, reference.strip(), note.strip(),
-                         sync.now())).lastrowid
+    rid = conn.execute("""INSERT INTO receipt (player_id, method, received_on, amount_cents, tournament_id, reference,
+                          note, created_at) VALUES (?,?,?,?,?,?,?,?)""",
+                       (pid, method, day, cents, tournament_id or None, reference.strip(), note.strip(),
+                        sync.now())).lastrowid
+    audit.record(conn, "receipt", cents, f"{RECEIPT_METHODS[method]} on {day}"
+                 + "".join(f", {x.strip()}" for x in (reference, note) if x.strip()), tournament_id or None, pid,
+                 f"receipt:{rid}")
+    return rid
 
 
 def delete_receipt(conn, receipt_id: int):
@@ -418,6 +433,8 @@ def delete_receipt(conn, receipt_id: int):
         raise RuleError(bank.locked_message(conn, r["reconciliation_id"]))
     bank.check_open(conn, r["received_on"])
     conn.execute("DELETE FROM receipt WHERE id=?", (receipt_id,))
+    audit.record(conn, "receipt_undone", r["amount_cents"], f"{RECEIPT_METHODS[r['method']]} on {r['received_on']}",
+                 r["tournament_id"], r["player_id"], f"receipt:{receipt_id}")
 
 
 # --- moving older decisions in (#38) -----------------------------------------

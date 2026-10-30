@@ -5,7 +5,7 @@ from urllib.parse import quote
 from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import RedirectResponse
 
-from .. import bank, db, ledger, sync
+from .. import audit, bank, db, ledger, sync
 from ..payouts import RuleError, compute_payouts, pool_breakdown
 from ..web import EVENT_SUMS, SERIES_SUMS, TOURNAMENT_SUMS, back, one, parse_date, parse_venue, render, safe_next
 
@@ -148,6 +148,7 @@ def player_page(request: Request, player_id: str):
         receipts = conn.execute("SELECT * FROM receipt WHERE player_id=? ORDER BY received_on DESC, id DESC",
                                 (player_id,)).fetchall()
         last = bank.latest(conn)
+        log = audit.entries(conn, player_id=player_id)
     owes_us = sum(c["balance"] for c in nights if c["state"] == "owing")
     owed = sum(h["amount_cents"] for h in history if h["status"] == "owed")
     paid = sum(h["amount_cents"] for h in history if h["status"] == "paid")
@@ -164,7 +165,7 @@ def player_page(request: Request, player_id: str):
         if h["status"]:
             row[h["status"]] += h["amount_cents"]
     return render(request, "player.html", p=p, history=history, owed=owed, paid=paid, tournaments=tournaments,
-                  nights=nights, owes_us=owes_us, credit=b["credit"].get(player_id, 0), receipts=receipts,
+                  nights=nights, owes_us=owes_us, log=log, actions=audit.ACTIONS, credit=b["credit"].get(player_id, 0), receipts=receipts,
                   states=ledger.STATES, receipt_methods=ledger.RECEIPT_METHODS, credit_methods=ledger.CREDIT_METHODS,
                   settled_methods={**ledger.CHARGE_METHODS, **ledger.RECEIPT_METHODS}, today=bank.today(),
                   locked_through=last["reconciled_on"] if last else None,

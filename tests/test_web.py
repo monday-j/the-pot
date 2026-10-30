@@ -87,7 +87,7 @@ def seeded(client):
 
 @pytest.mark.parametrize("url", ["/", "/series", "/series/1", "/tournaments/t1", "/events/e1", "/events",
                                  "/events?game=Smash%20Ultimate", "/players", "/players/u1", "/to-pay",
-                                 "/to-pay?view=history", "/venues", "/owed", "/setup"])
+                                 "/to-pay?view=history", "/venues", "/owed", "/setup", "/history"])
 def test_every_page_renders(seeded, url):
     assert seeded.get(url).status_code == 200
 

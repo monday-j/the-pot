@@ -117,6 +117,7 @@
 <td>{% for en in a.entries %}{{ en.placement|ordinal if en.placement else "·" }}{{ ", " if not loop.last }}{% endfor %}</td>{{ m.mtd(a.owed, "neg") }}{{ m.mtd(a.paid) }}</tr>
 {% else %}<tr><td colspan="5" class="empty">No attendees imported.</td></tr>{% endfor %}</tbody></table></div>
 
+<details class="panel" id="log"><summary>History · {{ log|length }}</summary><div>{% include "_audit.html" %}</div></details>
 {# ---- Setup ---------------------------------------------------------------------------------------------------- #}
 <details class="panel" id="setup"><summary>Setup: venue fee, venue, takings tracked, excluded</summary><div>
 {% if locked %}<p class="mut">Venue fee {{ (t.entry_fee_cents if t.entry_fee_cents is not none else t.series_fee or 0)|money }}{% if t.entry_fee_cents is not none %} (overridden){% endif %} · venue cut: {{ {"series": "the venue's usual cut", "custom": "custom", "none": "no venue"}[t.venue_mode] }} · takings tracked: {{ {"auto": "when Square payments are pulled", "on": "always", "off": "never"}[t.takings] }}.

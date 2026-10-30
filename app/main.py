@@ -7,8 +7,8 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import auth, config, db, mail, square
-from .routes import bank, home, login, owed, records, series, setup, topay, tournaments
+from . import audit, auth, config, db, mail, square
+from .routes import bank, history, home, login, owed, records, series, setup, topay, tournaments
 from .web import BASE, square_client
 
 
@@ -34,6 +34,7 @@ app.mount("/static", StaticFiles(directory=BASE / "static"), name="static")
 async def guard(request: Request, call_next):
     """Every request: refuse cross-site posts (CSRF), require the login, and add the security headers."""
     path = request.url.path
+    audit.CLIENT.set(request.client.host if request.client else "")  # for the audit log of money actions (#48)
     if auth.cross_site(request.method, request.headers):
         response = PlainTextResponse("Cross-site request refused", status_code=403)
     elif auth.is_open(path):
@@ -69,6 +70,6 @@ def healthz():
     return PlainTextResponse("ok")
 
 
-for _router in (login.router, home.router, owed.router, topay.router, series.router, tournaments.router, bank.router, setup.router,
+for _router in (login.router, home.router, owed.router, topay.router, history.router, series.router, tournaments.router, bank.router, setup.router,
                 records.router):
     app.include_router(_router)

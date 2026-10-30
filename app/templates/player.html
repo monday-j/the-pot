@@ -46,6 +46,7 @@
 <table class="sortable"><thead><tr><th>Time</th><th>Tournament</th><th class="r">Amount</th><th>Card</th></tr></thead><tbody>
 {% for s in square_payments %}<tr><td>{{ s.created_at|localtime }}</td><td>{{ m.tournament(s.tournament_id, s.tname) }}</td>{{ m.mtd(s.amount_cents) }}
 <td>{% if s.last_4 %}{{ s.card_brand|replace("_", " ")|title }} ··{{ s.last_4 }}{% else %}{{ s.source_type|lower }}{% endif %}{% if s.link == "auto" %} <span class="tag">auto</span>{% endif %}</td></tr>{% endfor %}</tbody></table>{% endif %}
+<details class="panel" id="log"><summary>History · {{ log|length }}</summary><div>{% include "_audit.html" %}</div></details>
 <h2>Also known as <span class="n">· {{ aliases|length }}</span></h2>
 <table><thead><tr><th>Tag</th><th>parry.gg user id</th><th></th></tr></thead><tbody>
 {% for a in aliases %}<tr><td>{{ a.gamer_tag }}</td><td class="mut">{{ a.id }}</td>

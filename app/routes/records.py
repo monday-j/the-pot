@@ -1,11 +1,11 @@
-"""Events, games, players, payouts and venues."""
+"""Events (by game), players and venues, and marking payouts and venue payments paid."""
 
 from urllib.parse import quote
 
 from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import RedirectResponse
 
-from .. import bank, db, sync
+from .. import bank, db, ledger, sync
 from ..payouts import RuleError, compute_payouts, pool_breakdown
 from ..web import EVENT_SUMS, SERIES_SUMS, TOURNAMENT_SUMS, back, one, parse_date, parse_venue, render, safe_next
 
@@ -14,6 +14,8 @@ router = APIRouter()
 
 @router.get("/events")
 def events_page(request: Request, series: int | None = None, game: str = "", flagged: str = ""):
+    """Every event, filtered by series, game and unfinalised placements. Filtered to one game, it also shows that
+    game's payout rules, each event's winner and its players (#46: this replaced the Games pages)."""
     with db.session() as conn:
         sql = f"""SELECT e.*, t.name AS tname, t.start_date, t.series_id, s.name AS sname, s.code AS scode, {EVENT_SUMS}
                   FROM event e JOIN tournament t ON t.id=e.tournament_id LEFT JOIN series s ON s.id=t.series_id
@@ -31,11 +33,28 @@ def events_page(request: Request, series: int | None = None, game: str = "", fla
             if flagged and e["id"] not in flags:
                 continue
             info = sync.event_pool(conn, e["id"])
-            events.append({"e": e, "pool": info[1] if info else None, "issue": flags.get(e["id"])})
+            winners = conn.execute("""SELECT p.id, p.gamer_tag FROM event_entry_c ee JOIN player p ON p.id=ee.player_id
+                                      WHERE ee.event_id=? AND ee.placement=1 ORDER BY p.gamer_tag COLLATE NOCASE""",
+                                   (e["id"],)).fetchall() if game else []
+            events.append({"e": e, "pool": info[1] if info else None, "issue": flags.get(e["id"]), "winners": winners})
+        rules = players = []
+        if game:
+            rules = conn.execute("""SELECT r.*, s.name AS sname, s.code AS scode, e.name AS event_name, e.tournament_id,
+                                           p.starts_on AS period_start
+                                    FROM rule r JOIN series s ON s.id=r.series_id LEFT JOIN event e ON e.id=r.event_id
+                                    LEFT JOIN series_period p ON p.id=r.period_id
+                                    WHERE r.game_name=? OR e.game_name=? ORDER BY s.name, r.event_id, p.starts_on""",
+                                 (game, game)).fetchall()
+            players = conn.execute("""SELECT p.id, p.gamer_tag, COUNT(*) AS events, MIN(ee.placement) AS best,
+                                             SUM(ee.placement=1) AS wins
+                                      FROM event_entry_c ee JOIN player p ON p.id=ee.player_id
+                                      JOIN event e ON e.id=ee.event_id WHERE e.game_name=?
+                                      GROUP BY p.id ORDER BY wins DESC, events DESC, p.gamer_tag COLLATE NOCASE""",
+                                   (game,)).fetchall()
         series_opts = conn.execute("SELECT id, name, code FROM series ORDER BY name").fetchall()
-        game_opts = [r[0] for r in conn.execute("SELECT DISTINCT game_name FROM event ORDER BY 1")]
+        game_opts = [r[0] for r in conn.execute("SELECT DISTINCT game_name FROM event WHERE game_name != '' ORDER BY 1")]
     return render(request, "events.html", events=events, series_opts=series_opts, game_opts=game_opts,
-                  f_series=series, f_game=game, f_flagged=flagged)
+                  f_series=series, f_game=game, f_flagged=flagged, rules=rules, players=players)
 
 
 @router.get("/events/{event_id}")
@@ -65,48 +84,15 @@ def event_page(request: Request, event_id: str):
                   paid=sum(r["amount_cents"] for r in rows if r["status"] == "paid"))
 
 
-@router.get("/games")
-def games_page(request: Request):
-    with db.session() as conn:
-        games = conn.execute(f"""SELECT e.game_name, COUNT(*) AS events, COUNT(DISTINCT t.id) AS tournaments,
-                                        SUM(e.entrant_count) AS entrants, SUM(e.owed) AS owed, SUM(e.paid) AS paid,
-                                        MAX(t.start_date) AS last_date
-                                 FROM (SELECT e.*, {EVENT_SUMS} FROM event e) e
-                                 JOIN tournament t ON t.id=e.tournament_id WHERE t.excluded=0
-                                 GROUP BY e.game_name ORDER BY e.game_name""").fetchall()
-    return render(request, "games.html", games=games)
+@router.get("/games", include_in_schema=False)
+def old_games():
+    """The Games pages became the events list's game filter (#46)."""
+    return RedirectResponse("/events", 301)
 
 
-@router.get("/games/{name:path}")
-def game_page(request: Request, name: str):
-    with db.session() as conn:
-        events = []
-        flags = {i["id"]: i["reason"] for i in sync.event_issues(conn)}
-        for e in conn.execute(f"""SELECT e.*, t.name AS tname, t.start_date, t.series_id, s.name AS sname, s.code AS scode, {EVENT_SUMS}
-                                  FROM event e JOIN tournament t ON t.id=e.tournament_id
-                                  LEFT JOIN series s ON s.id=t.series_id
-                                  WHERE e.game_name=? AND t.excluded=0 ORDER BY t.start_date DESC, e.name""",
-                              (name,)):
-            winners = conn.execute("""SELECT p.id, p.gamer_tag FROM event_entry_c ee JOIN player p ON p.id=ee.player_id
-                                      WHERE ee.event_id=? AND ee.placement=1 ORDER BY p.gamer_tag COLLATE NOCASE""",
-                                   (e["id"],)).fetchall()
-            info = sync.event_pool(conn, e["id"])
-            events.append({"e": e, "winners": winners, "pool": info[1] if info else None, "issue": flags.get(e["id"])})
-        rules = conn.execute("""SELECT r.*, s.name AS sname, s.code AS scode, e.name AS event_name, e.tournament_id,
-                                       p.starts_on AS period_start
-                                FROM rule r JOIN series s ON s.id=r.series_id LEFT JOIN event e ON e.id=r.event_id
-                                LEFT JOIN series_period p ON p.id=r.period_id
-                                WHERE r.game_name=? OR e.game_name=? ORDER BY s.name, r.event_id, p.starts_on""",
-                             (name, name)).fetchall()
-        players = conn.execute("""SELECT p.id, p.gamer_tag, COUNT(*) AS events, MIN(ee.placement) AS best,
-                                         SUM(ee.placement=1) AS wins
-                                  FROM event_entry_c ee JOIN player p ON p.id=ee.player_id
-                                  JOIN event e ON e.id=ee.event_id WHERE e.game_name=?
-                                  GROUP BY p.id ORDER BY wins DESC, events DESC, p.gamer_tag COLLATE NOCASE""",
-                               (name,)).fetchall()
-    if not events and not rules:
-        raise HTTPException(404)
-    return render(request, "game.html", game_name=name, events=events, rules=rules, players=players)
+@router.get("/games/{name:path}", include_in_schema=False)
+def old_game(name: str):
+    return RedirectResponse(f"/events?game={quote(name, safe='')}", 301)
 
 
 @router.get("/players")
@@ -155,6 +141,14 @@ def player_page(request: Request, player_id: str):
                                           JOIN tournament t ON t.id=sp.tournament_id JOIN player a ON a.id=sp.player_id
                                           WHERE COALESCE(a.merged_into, a.id)=? AND sp.ignored=0
                                           ORDER BY sp.created_at DESC""", (player_id,)).fetchall()
+        b = ledger.books(conn)
+        tnames = {r[0]: r[1] for r in conn.execute("SELECT id, name FROM tournament")}
+        nights = sorted(({**c, "tournament_name": tnames.get(c["tournament_id"])} for (tid, pid), c in b["charges"].items()
+                         if pid == player_id), key=lambda c: (c["date"], c["tournament_id"]), reverse=True)
+        receipts = conn.execute("SELECT * FROM receipt WHERE player_id=? ORDER BY received_on DESC, id DESC",
+                                (player_id,)).fetchall()
+        last = bank.latest(conn)
+    owes_us = sum(c["balance"] for c in nights if c["state"] == "owing")
     owed = sum(h["amount_cents"] for h in history if h["status"] == "owed")
     paid = sum(h["amount_cents"] for h in history if h["status"] == "paid")
     best = min((h["placement"] for h in history if h["placement"]), default=None)
@@ -170,6 +164,10 @@ def player_page(request: Request, player_id: str):
         if h["status"]:
             row[h["status"]] += h["amount_cents"]
     return render(request, "player.html", p=p, history=history, owed=owed, paid=paid, tournaments=tournaments,
+                  nights=nights, owes_us=owes_us, credit=b["credit"].get(player_id, 0), receipts=receipts,
+                  states=ledger.STATES, receipt_methods=ledger.RECEIPT_METHODS, credit_methods=ledger.CREDIT_METHODS,
+                  settled_methods={**ledger.CHARGE_METHODS, **ledger.RECEIPT_METHODS}, today=bank.today(),
+                  locked_through=last["reconciled_on"] if last else None,
                   aliases=aliases, others=others, square_payments=square_payments, best=best, totals=sorted(totals.values(), key=lambda r: (r["sname"] or "", r["game"])))
 
 

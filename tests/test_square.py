@@ -539,7 +539,7 @@ def test_fee_pages(client, monkeypatch):  # noqa: F811
     page = client.post("/tournaments/t1/square/pull").text
     assert "$0.22</b> card fees" in page and "(1 pending)" in page and "$19.78</b> net" in page
     assert ">pending<" in page and "$0.22" in page
-    page = client.get("/series/FNB").text
+    page = client.get("/series/FNB?tab=money").text
     assert "$20.00</b> taken by card, <b>$0.22</b> fees" in page and "Card fees" in page
 
 
@@ -575,11 +575,10 @@ def test_takings_issues_show_in_needs_attention(client, monkeypatch):  # noqa: F
     client.post("/tournaments/t1/square/pull")
     client.post("/square-payments/P1/link", data={"player_id": "u1"})
     page = client.get("/series/FNB").text
-    assert "1 tournament with payments to link" in page and "1 payment ($5.00) to link to players" in page
-    assert 'href="/tournaments/t1#square"' in page
+    assert 'href="/tournaments/t1"' in page and '<span class="chip link">1 to link</span>' in page
     assert '<span class="chip link">1 to link</span>' in lane(client.get("/").text, "collect")
     client.post("/square-payments/P2/no-player")  # $10 taken of $20: $10 that nobody named owes
-    assert "💳 $10.00 missing that nobody named owes" in client.get("/series/FNB").text
+    assert '<span class="chip wait">$10.00 missing</span>' in client.get("/series/FNB").text
     assert '<span class="chip wait">$10.00 missing</span>' in lane(client.get("/").text, "collect")
 
 

@@ -75,3 +75,14 @@ def test_credit_is_kept_unless_told_otherwise(night):
     sid = credit.split('action="/settlements/')[1].split("/")[0]
     r = night.post(f"/settlements/{sid}/delete", data={"next": "/owed#credit"}, follow_redirects=False)
     assert r.headers["location"] == "/owed#credit"
+
+
+def test_the_player_page_shows_what_they_owe_and_takes_payment(night):
+    page = night.get("/players/u2").text
+    assert '<span class="k">They owe us</span><span class="v">$5.00</span>' in page and "for 1 night" in page
+    assert '<span class="chip owing">owing</span>' in page.split('id="nights"')[1]
+    r = night.post("/owed/u2/receipt", data={"method": "cash", "next": "/players/u2#nights"}, follow_redirects=False)
+    assert r.headers["location"] == "/players/u2#nights"
+    page = night.get("/players/u2").text
+    assert '<span class="v">$0.00</span>' in page and "by transfer or cash" in page and "Paid outside Square" in page
+    assert '<span class="chip paid">paid</span>' in night.get("/players/u1").text  # Alice paid on the night

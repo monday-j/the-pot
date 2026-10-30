@@ -1,6 +1,0 @@
-{% extends "base.html" %}{% import "_macros.html" as m %}{% block body %}
-<h1>Games</h1>
-<table class="sortable"><thead><tr><th>Game</th><th class="r">Events</th><th class="r">Tournaments</th><th class="r">Entrants</th><th>Latest</th><th class="r">Owed</th><th class="r">Paid</th></tr></thead><tbody>
-{% for g in games %}<tr><td>{{ m.game(g.game_name) }}</td><td class="r">{{ g.events }}</td><td class="r">{{ g.tournaments }}</td><td class="r">{{ g.entrants }}</td><td>{{ g.last_date }}</td>{{ m.mtd(g.owed, "warn") }}{{ m.mtd(g.paid, "ok") }}</tr>
-{% else %}<tr><td colspan="7" class="mut">No events imported yet.</td></tr>{% endfor %}</tbody></table>
-{% endblock %}

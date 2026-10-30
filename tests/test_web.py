@@ -85,26 +85,31 @@ def seeded(client):
     return client
 
 
-@pytest.mark.parametrize("url", ["/", "/series", "/series/1", "/tournaments/t1", "/events/e1", "/events", "/games",
-                                 "/games/Smash%20Ultimate", "/players", "/players/u1", "/to-pay",
-                                 "/to-pay?view=history", "/venues", "/owed"])
+@pytest.mark.parametrize("url", ["/", "/series", "/series/1", "/tournaments/t1", "/events/e1", "/events",
+                                 "/events?game=Smash%20Ultimate", "/players", "/players/u1", "/to-pay",
+                                 "/to-pay?view=history", "/venues", "/owed", "/setup"])
 def test_every_page_renders(seeded, url):
     assert seeded.get(url).status_code == 200
 
 
 def test_records_link_to_each_other(seeded):
     page = seeded.get("/events/e1").text
-    for href in ('/players/u1', '/tournaments/t1', '/series/FNB', '/games/Smash%20Ultimate'):
+    for href in ('/players/u1', '/tournaments/t1', '/series/FNB', '/events?game=Smash%20Ultimate'):
         assert f'href="{href}"' in page
     assert 'href="/events/e1"' in seeded.get("/players/u1").text
     assert 'href="/players/u1"' in seeded.get("/to-pay").text
     assert 'href="/players/u2"' in seeded.get("/tournaments/t1").text
-    assert 'href="/events/e1"' in seeded.get("/games/Smash%20Ultimate").text
+    assert 'href="/events/e1"' in seeded.get("/events?game=Smash%20Ultimate").text
     assert 'href="/events/e1"' in seeded.get("/events").text
 
 
-def test_unknown_game_is_404(seeded):
-    assert seeded.get("/games/Nope").status_code == 404
+def test_games_pages_became_the_events_game_filter(seeded):
+    r = seeded.get("/games/Smash%20Ultimate", follow_redirects=False)
+    assert r.status_code == 301 and r.headers["location"] == "/events?game=Smash%20Ultimate"
+    assert seeded.get("/games", follow_redirects=False).headers["location"] == "/events"
+    page = seeded.get("/events?game=Smash%20Ultimate").text
+    assert "<h1>Smash Ultimate</h1>" in page and "Payout rules" in page and 'href="/players/u1"' in page
+    assert "No events match" in seeded.get("/events?game=Nope").text
 
 
 def test_to_pay_groups_by_recipient_and_lists_what_was_paid(seeded):
@@ -381,7 +386,7 @@ def test_series_terms_over_time(seeded):
     assert 'class="payee" id="player-' not in seeded.get("/to-pay").text  # the new rule's pool is $0
     page = seeded.get("/series/FNB?period=1").text
     assert "terms from the start" in page and "50 / 30 / 20" in page
-    assert "1 paid (100)" in seeded.get("/games/Smash%20Ultimate").text
+    assert "1 paid (100)" in seeded.get("/events?game=Smash%20Ultimate").text
 
     # moving the new terms after t1's date gives t1 its old venue and rule back
     seeded.post("/periods/2", data={"starts_on": "2026-06-01", "venue_id": "2", "entry_fee": "8"})
@@ -445,3 +450,34 @@ def test_tournament_setup_tracks_takings_and_excludes(seeded):
     page = seeded.get("/tournaments/t1").text
     assert '<span class="chip locked">excluded</span>' in page and ">Restore</button>" in page
     assert seeded.post("/tournaments/t1/exclude", follow_redirects=False).headers["location"] == "/series/1"
+
+
+def test_series_page_tabs(seeded):
+    page = seeded.get("/series/FNB").text
+    assert '<a href="?tab=tournaments" class="on">' in page and 'href="/tournaments/t1"' in page
+    assert '<span class="chip owing">$26.00 to pay</span>' in page  # its stage, as on the run sheet
+    assert "Payout rules" in seeded.get("/series/FNB?tab=terms").text
+    assert "Payout rules" in seeded.get("/series/FNB?period=1").text  # asking for terms opens their tab
+    assert "prizes owed" in seeded.get("/series/FNB?tab=money").text
+    r = seeded.post("/series/1/settings", data={"name": "FNB", "custom_slug": "fnb"}, follow_redirects=False)
+    assert r.headers["location"] == "/series/FNB?tab=settings"
+    assert 'name="custom_slug" value="fnb"' in seeded.get(r.headers["location"]).text
+    assert '<a href="?tab=tournaments" class="on">' in seeded.get("/series/FNB?tab=nope").text
+
+
+def test_setup_holds_connections_items_syncing_and_the_reminder(seeded):
+    page = seeded.get("/setup").text
+    for part in ('id="items"', 'id="sync"', 'id="reminder"', "parry.gg", 'href="/setup/styleguide"'):
+        assert part in page, part
+    assert 'href="/series/FNB"' in page.split('id="sync"')[1]
+    for old in ("/square/items", "/square/categories"):
+        r = seeded.get(old, follow_redirects=False)
+        assert r.status_code == 301 and r.headers["location"] == "/setup#items", old
+    r = seeded.post("/square/items", data={"key": "x", "meaning": "bogus"}, follow_redirects=False)
+    assert r.headers["location"].startswith("/setup?error=")
+
+
+def test_a_venue_owed_links_to_to_pay(seeded):
+    add_venue(seeded)
+    set_terms(seeded)
+    assert 'href="/to-pay#venue-1">Pay $24.00 on To pay</a>' in seeded.get("/venues/1").text

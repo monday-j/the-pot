@@ -1,7 +1,7 @@
 {% extends "base.html" %}{% import "_macros.html" as m %}{% block title %}Run sheet · The Pot{% endblock %}{% block body %}
 <h1>Run sheet</h1>
 {% if not has_key() %}<div class="strip">No parry.gg API key found. Set <code>PARRY_API_KEY</code> (or <code>PARRY_API_KEY_FILE</code>) to import tournaments.</div>{% endif %}
-{% if unmapped %}<div class="strip"><a href="/square/items">{{ unmapped }} Square item{{ "s" if unmapped != 1 }} with no meaning yet</a>: until you say what {{ "they're" if unmapped != 1 else "it's" }} for, takings can't be split into fees, food and the rest.</div>{% endif %}
+{% if unmapped %}<div class="strip"><a href="/setup#items">{{ unmapped }} Square item{{ "s" if unmapped != 1 }} with no meaning yet</a>: until you say what {{ "they're" if unmapped != 1 else "it's" }} for, takings can't be split into fees, food and the rest.</div>{% endif %}
 
 <div class="tiles">
 <a class="tile{{ ' owing' if owed.cents }}" href="/owed"><span class="k">Owed to us</span><span class="v">{{ owed.cents|money }}</span>

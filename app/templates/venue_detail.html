@@ -2,8 +2,8 @@
 {% block crumbs %}<div class="crumbs"><a href="/venues">Venues</a><span>{{ v.name }}</span></div>{% endblock %}
 {% block body %}
 <h1>{{ v.name }}</h1>
-<div class="summary"><span><b>{{ v.series }}</b> series</span><span><b>{{ v.tournaments }}</b> tournaments</span><span><b class="warn">{{ v.owed|money }}</b> owed</span><span><b class="ok">{{ v.paid|money }}</b> paid</span>
-<span><a href="/to-pay?view=history&amp;kind=venue&amp;venue={{ v.id }}">Payments made</a></span></div>
+<div class="summary"><span><b>{{ v.series }}</b> series</span><span><b>{{ v.tournaments }}</b> tournaments</span><span><b>{{ v.owed|money }}</b> owed</span><span><b>{{ v.paid|money }}</b> paid</span>
+{% if v.owed %}<span><a href="/to-pay#venue-{{ v.id }}">Pay {{ v.owed|money }} on To pay</a></span>{% endif %}<span><a href="/to-pay?view=history&amp;kind=venue&amp;venue={{ v.id }}">Payments made</a></span></div>
 {% if v.notes %}<p>{{ v.notes }}</p>{% endif %}
 <h2>Series <span class="n">· {{ series|length }}</span></h2>
 <table class="sortable"><thead><tr><th>Series</th><th>Here</th><th class="r">Tournaments</th><th>Last</th><th class="r">Owed to venue</th><th class="r">Paid to venue</th></tr></thead><tbody>

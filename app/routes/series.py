@@ -3,7 +3,7 @@
 from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import RedirectResponse
 
-from .. import codes, config, db, square, sync
+from .. import codes, config, db, runsheet, square, sync
 from ..payouts import Rule, RuleError, parse_splits, splits_to_json
 from ..web import (EVENT_SUMS, NO_SQUARE, SERIES_SUMS, TOURNAMENT_SUMS, back, dollars_to_cents, flags_by, one,
                    parry_client, parse_date, pick_venue, render, square_client, square_setup, to_pct, venue_options)
@@ -47,8 +47,10 @@ def create_series(name: str = Form(...), pattern: str = Form(""), custom_slug: s
 
 
 @router.get("/series/{ref}")
-def series_page(request: Request, ref: str, period: int | None = None):
-    """`ref` is the series code (/series/FNB); a numeric id redirects to the code URL."""
+def series_page(request: Request, ref: str, period: int | None = None, tab: str = ""):
+    """`ref` is the series code (/series/FNB); a numeric id redirects to the code URL. Tabs (#46): tournaments and
+    their stage, terms & rules (the default when a `period` is asked for), money, and settings."""
+    tab = tab if tab in ("tournaments", "terms", "money", "settings") else "terms" if period else "tournaments"
     with db.session() as conn:
         s = conn.execute("SELECT id, code FROM series WHERE id=?" if ref.isdigit() else
                          "SELECT id, code FROM series WHERE code=?", (int(ref) if ref.isdigit() else ref.upper(),)).fetchone()
@@ -66,17 +68,13 @@ def series_page(request: Request, ref: str, period: int | None = None):
                                   WHERE p.series_id=? ORDER BY p.starts_on""", (series_id,)).fetchall()
         current = periods[-1] if periods else None
         shown = next((p for p in periods if p["id"] == period), current)
-        issues = sync.event_issues(conn, series_id=series_id)
-        by_tournament = flags_by(issues, "tournament_id")
-        payment_issues = square.takings_issues(conn, series_id)
-        unpaid = {i["tournament_id"]: i for i in payment_issues}
+        cards = {c["id"]: c for cs in runsheet.stages(conn, series_id).values() for c in cs}
         tournaments = []
         for t in conn.execute(f"""SELECT t.*, {TOURNAMENT_SUMS} FROM tournament t WHERE t.series_id=?
                                   ORDER BY t.start_date DESC""", (series_id,)).fetchall():
             pools = [sync.event_pool(conn, e["id"]) for e in conn.execute(
                 "SELECT id FROM event WHERE tournament_id=?", (t["id"],))]
-            tournaments.append({**dict(t), "flags": len(by_tournament.get(t["id"], [])), "unpaid": unpaid.get(t["id"]),
-                                "pool": sum(i[1] for i in pools if i)})
+            tournaments.append({**dict(t), "pool": sum(i[1] for i in pools if i)})
         games = conn.execute(f"""SELECT e.game_name, COUNT(*) AS events, SUM(e.entrant_count) AS entrants,
                                         COUNT(DISTINCT t.id) AS tournaments, SUM(owed) AS owed, SUM(paid) AS paid
                                  FROM (SELECT e.*, {EVENT_SUMS} FROM event e) e
@@ -97,9 +95,8 @@ def series_page(request: Request, ref: str, period: int | None = None):
                               (series_id,)).fetchall()
         venues = venue_options(conn)
     return render(request, "series.html", s=s, tournaments=tournaments, games=games, game_rules=game_rules,
-                  rules=rules, events=events, sync_status=sync.status.get(series_id), issues=issues,
-                  payment_issues=payment_issues,
-                  venues=venues, periods=periods, current=current, shown=shown,
+                  rules=rules, events=events, sync_status=sync.status.get(series_id), tab=tab, cards=cards,
+                  stages=runsheet.STAGES, venues=venues, periods=periods, current=current, shown=shown,
                   square_status=square.status.get(series_id), square_setup=square_setup(),
                   auto_pull_hours=config.square_auto_pull_hours())
 
@@ -108,7 +105,7 @@ def series_page(request: Request, ref: str, period: int | None = None):
 def series_settings(series_id: int, name: str = Form(...), code: str = Form(""), pattern: str = Form(""),
                     custom_slug: str = Form("")):
     if not pattern.strip() and not custom_slug.strip():
-        return back(f"/series/{series_id}", "Enter a custom slug or a match pattern")
+        return back(f"/series/{series_id}?tab=settings", "Enter a custom slug or a match pattern")
     try:
         with db.session() as conn:
             current = one(conn, "SELECT id, code FROM series WHERE id=?", series_id)
@@ -116,8 +113,8 @@ def series_settings(series_id: int, name: str = Form(...), code: str = Form(""),
             conn.execute("UPDATE series SET name=?, code=?, pattern=?, custom_slug=? WHERE id=?",
                          (name.strip(), code, pattern.strip(), custom_slug.strip(), series_id))
     except RuleError as e:
-        return back(f"/series/{series_id}", str(e))
-    return back(f"/series/{code or series_id}")
+        return back(f"/series/{series_id}?tab=settings", str(e))
+    return back(f"/series/{code or series_id}?tab=settings")
 
 
 @router.post("/series/{series_id}/track")
@@ -169,7 +166,7 @@ def add_period(series_id: int, starts_on: str = Form(...), venue_id: str = Form(
                                            copy_rules_from=before["id"] if before else None)
             sync.recompute_series(conn, series_id)
     except RuleError as e:
-        return back(f"/series/{series_id}", str(e))
+        return back(f"/series/{series_id}?tab=terms", str(e))
     return back(f"/series/{series_id}?period={period_id}")
 
 
@@ -199,10 +196,10 @@ def delete_period(period_id: int):
     with db.session() as conn:
         p = one(conn, "SELECT * FROM series_period WHERE id=?", period_id)
         if p["starts_on"] == "":
-            return back(f"/series/{p['series_id']}", "The first terms can't be deleted")
+            return back(f"/series/{p['series_id']}?tab=terms", "The first terms can't be deleted")
         conn.execute("DELETE FROM series_period WHERE id=?", (period_id,))  # and its game rules
         sync.recompute_series(conn, p["series_id"])  # its tournaments fall back to the terms before
-    return back(f"/series/{p['series_id']}")
+    return back(f"/series/{p['series_id']}?tab=terms")
 
 
 @router.post("/series/{series_id}/square/pull")

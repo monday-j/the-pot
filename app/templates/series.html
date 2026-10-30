@@ -5,25 +5,32 @@
 <h1>{{ s.name }} <span class="tag">{{ s.code }}</span> <span class="tag">{{ "tracked" if s.tracked else "not tracked" }}</span></h1>
 {% if sync_status %}<div class="strip {{ 'err' if sync_status.state == 'error' }}">{{ sync_status.message }}</div>{% endif %}
 {% if square_status %}<div class="strip {{ 'err' if square_status.state == 'error' }}">Square{{ " (automatic)" if square_status.auto }}, {{ square_status.at|localtime }}: {{ square_status.message }}</div>{% endif %}
-<div class="summary"><span><b>{{ s.n }}</b> tournaments</span><span><b>{{ s.events }}</b> events</span><span><b class="warn">{{ s.owed|money }}</b> owed</span><span><b class="ok">{{ s.paid|money }}</b> paid</span>
-{% if current and current.venue_id %}<span>venue: {{ m.venue(current.venue_id, current.venue) }}</span>{% endif %}<span><b class="warn">{{ s.venue_owed|money }}</b> owed to venue</span>{% if s.square_taken %}<span><b>{{ s.square_taken|money }}</b> taken by card, <b>{{ s.square_fees|money }}</b> fees</span>{% endif %}<span><b class="ok">{{ s.venue_paid|money }}</b> paid to venue</span>
+<div class="summary"><span><b>{{ s.n }}</b> tournaments</span><span><b>{{ s.events }}</b> events</span>{% if current and current.venue_id %}<span>venue: {{ m.venue(current.venue_id, current.venue) }}</span>{% endif %}
 <span>last synced {{ (s.last_synced or "never")[:16] }}</span></div>
 <div class="toolbar"><form class="inline" method="post" action="/series/{{ s.id }}/sync"><button>Import / sync now</button></form>
 <form class="inline" method="post" action="/series/{{ s.id }}/square/pull"><button class="sec" {{ "disabled" if not square_setup.env }} title="{{ square_setup.error or ('Square: ' ~ square_setup.env if square_setup.env else 'Square is not set up (see README)') }}">Pull Square payments (all tournaments)</button></form>
 {% if square_setup.env and auto_pull_hours %}<span class="mut">auto-pulls the last 14 days every {{ auto_pull_hours|round(1)|string|replace(".0", "") }}h{{ " while tracked" if not s.tracked }}</span>{% endif %}
 <form class="inline" method="post" action="/series/{{ s.id }}/track"><button class="sec">{{ "Stop tracking" if s.tracked else "Track this series" }}</button></form></div>
-{% include "_issues.html" %}
+{% set tabs = [("tournaments", "Tournaments"), ("terms", "Terms & rules"), ("money", "Money"), ("settings", "Settings")] %}
+<div class="tabs">{% for key, label in tabs %}<a href="?tab={{ key }}" class="{{ 'on' if tab == key }}">{{ label }}</a>{% endfor %}</div>
 
-<h2>Tournaments <span class="n">· {{ tournaments|length }}</span></h2>
-<div class="tw"><table class="sortable" id="tournaments"><thead><tr><th>Date</th><th>Tournament</th><th class="r">Attendees</th><th class="r">Events</th><th class="r">Pool</th><th class="r">Owed</th><th class="r">Paid</th><th class="r">Venue</th><th class="r" title="Square payments, net of refunds">By card</th><th class="r">Card fees</th><th>Flags</th><th></th></tr></thead><tbody>
-{% for t in tournaments %}<tr><td>{{ t.start_date }}</td><td>{{ m.tournament(t.id, t.name) }}{% if t.manual %} <span class="tag">manual</span>{% endif %}{% if t.excluded %} <span class="tag">excluded</span>{% endif %}</td>
-<td class="r">{{ t.num_attendees }}</td><td class="r">{{ t.events }}</td>{{ m.mtd(t.pool) }}{{ m.mtd(t.owed, "warn") }}{{ m.mtd(t.paid, "ok") }}{{ m.mtd(t.venue_amount, "st-" ~ t.venue_status if t.venue_status else "") }}{{ m.mtd(t.square_taken) }}{{ m.mtd(t.square_fees) }}
-<td>{% if t.flags %}<span class="flag">⚠ {{ t.flags }}</span>{% endif %}{% if t.unpaid %} {{ m.payissue(t.unpaid) }}{% endif %}</td>
-<td><form class="inline" method="post" action="/tournaments/{{ t.id }}/exclude"><button class="sec">{{ "Restore" if t.excluded else "Exclude" }}</button></form></td></tr>
-{% else %}<tr><td colspan="12" class="mut">Nothing imported yet. Use "Import / sync now".</td></tr>{% endfor %}</tbody></table></div>
+{% if tab == "tournaments" %}
+<div class="tw"><table class="sortable" id="tournaments"><thead><tr><th>Date</th><th>Tournament</th><th>Stage</th><th class="r">Attendees</th><th class="r">Events</th><th></th></tr></thead><tbody>
+{% for t in tournaments %}{% set c = cards.get(t.id) %}<tr><td data-v="{{ t.start_date }}">{{ t.start_date|shortday }}</td><td>{{ m.tournament(t.id, t.name) }}{% if t.manual %} <span class="tag">manual</span>{% endif %}</td>
+<td>{% if t.excluded %}<span class="chip locked">excluded</span>{% elif c %}<span class="chip {{ {'collect': 'wait', 'waiting': 'locked', 'payout': 'owing', 'done': 'paid'}[c.stage] }}">{{ stages[c.stage] }}</span>
+{%- if c.takings and c.takings.kind == "link" %} <span class="chip link">{{ c.takings.unlinked }} to link</span>{% endif %}
+{%- if c.takings and c.takings.gap %} <span class="chip wait">{{ c.takings.gap|money }} missing</span>{% endif %}
+{%- if c.not_final %} <span class="chip wait">{{ c.not_final }} not final</span>{% endif %}
+{%- if c.to_pay %} <span class="chip owing">{{ c.to_pay|money }} to pay</span>{% endif %}
+{%- if c.owed %} <span class="chip owing">{{ c.owed.cents|money }} owed by {{ c.owed.players }}</span>{% endif %}
+{%- if c.locked %} <span class="chip locked">locked</span>{% endif %}{% endif %}</td>
+<td class="r">{{ t.num_attendees }}</td><td class="r">{{ t.events }}</td>
+<td>{% if not t.locked_by %}<form class="inline" method="post" action="/tournaments/{{ t.id }}/exclude"><input type="hidden" name="next" value="/series/{{ s.code or s.id }}"><button class="sec">{{ "Restore" if t.excluded else "Exclude" }}</button></form>{% endif %}</td></tr>
+{% else %}<tr><td colspan="6" class="empty">Nothing imported yet. Use "Import / sync now".</td></tr>{% endfor %}</tbody></table></div>
 <form method="post" action="/series/{{ s.id }}/tournaments" class="toolbar">
 <label>Add a tournament by parry.gg link<input name="link" placeholder="https://parry.gg/friday-night-brawl-90-abcdef12" size="55" required></label><button>Add</button></form>
 
+{% elif tab == "terms" %}
 {% macro since(p) %}{{ "from " ~ p.starts_on if p.starts_on else "from the start" }}{% endmacro %}
 <h2>Terms over time <span class="n">· {{ periods|length }}</span></h2>
 <table><thead><tr><th>From</th><th>Venue</th><th>Venue fee ($)</th><th class="r">Tournaments</th><th class="r">Game rules</th><th>Note</th><th></th></tr></thead><tbody>
@@ -70,6 +77,15 @@
 <td><button form="rule-form">Save rule</button></td></tr></tfoot></table>
 <p class="help">The bottom row adds a rule to the terms {{ since(shown) }}: saving replaces any rule for the same game (or event) and recalculates unpaid payouts. Payouts already marked paid are left alone and flagged if the maths now differs. A single-event rule overrides the game rule, whatever the terms.</p>
 
+{% elif tab == "money" %}
+<div class="summary"><span><b class="warn">{{ s.owed|money }}</b> prizes owed</span><span><b class="ok">{{ s.paid|money }}</b> prizes paid</span>
+<span><b class="warn">{{ s.venue_owed|money }}</b> owed to venue</span><span><b class="ok">{{ s.venue_paid|money }}</b> paid to venue</span>{% if s.square_taken %}<span><b>{{ s.square_taken|money }}</b> taken by card, <b>{{ s.square_fees|money }}</b> fees</span>{% endif %}</div>
+<div class="tw"><table class="sortable"><thead><tr><th>Date</th><th>Tournament</th><th class="r">Pool</th><th class="r">Prizes owed</th><th class="r">Prizes paid</th><th class="r">Venue</th><th class="r" title="Square payments, net of refunds">By card</th><th class="r">Card fees</th></tr></thead><tbody>
+{% for t in tournaments if not t.excluded %}<tr><td data-v="{{ t.start_date }}">{{ t.start_date|shortday }}</td><td>{{ m.tournament(t.id, t.name) }}</td>
+{{ m.mtd(t.pool) }}{{ m.mtd(t.owed, "neg") }}{{ m.mtd(t.paid) }}<td class="r" data-v="{{ t.venue_amount or 0 }}">{% if t.venue_amount %}{{ t.venue_amount|money }} <span class="mut">{{ t.venue_status }}</span>{% else %}<span class="mut">·</span>{% endif %}</td>{{ m.mtd(t.square_taken) }}{{ m.mtd(t.square_fees) }}</tr>
+{% else %}<tr><td colspan="8" class="empty">Nothing imported yet.</td></tr>{% endfor %}</tbody></table></div>
+
+{% else %}
 <h2>Settings</h2>
 <form method="post" action="/series/{{ s.id }}/settings"><table class="kv">
 <tr><th>Name</th><td><input name="name" value="{{ s.name }}" required></td></tr>
@@ -77,5 +93,6 @@
 <tr><th>Custom slug (quick link shared by the series)</th><td><input name="custom_slug" value="{{ s.custom_slug }}"></td></tr>
 <tr><th>Name pattern (fallback)</th><td><input name="pattern" value="{{ s.pattern }}"></td></tr>
 <tr><th></th><td><button>Save settings</button></td></tr></table></form>
-<p class="help">The venue and venue fee are part of the terms above. The venue's cut is set on its <a href="/venues">venue page</a>. It is a separate payable per tournament (see the <a href="/venue">venue payments</a> ledger) and does not change the prize pool. A tournament can be held at a different venue, use a custom cut, or have no venue.</p>
+<p class="help">The venue and venue fee are part of the terms above. The venue's cut is set on its <a href="/venues">venue page</a>. It is a separate payable per tournament (see <a href="/to-pay">To pay</a> ledger) and does not change the prize pool. A tournament can be held at a different venue, use a custom cut, or have no venue.</p>
+{% endif %}
 {% endblock %}

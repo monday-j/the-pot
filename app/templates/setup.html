@@ -1,0 +1,34 @@
+{% extends "base.html" %}{% import "_macros.html" as m %}{% block title %}Setup · The Pot{% endblock %}{% block body %}
+<h1>Setup</h1>
+<h2>Connections</h2>
+<div class="tw"><table class="kv">
+<tr><th>parry.gg</th><td>{% if parry_key %}<span class="chip paid">connected</span> <span class="mut">API key set</span>{% else %}<span class="chip owing">not set</span> <span class="mut">set PARRY_API_KEY (or PARRY_API_KEY_FILE) to import tournaments</span>{% endif %}</td></tr>
+<tr><th>Square</th><td>{% if square_setup.error %}<span class="chip owing">problem</span> {{ square_setup.error }}{% elif square_setup.env %}<span class="chip paid">connected</span> <span class="mut">{{ square_setup.env }}{% if auto_pull_hours %} · pulls the last 14 days of tracked series every {{ auto_pull_hours|round(1)|string|replace(".0", "") }}h{% endif %}</span>{% else %}<span class="chip owing">not set up</span> <span class="mut">give the app read-only Square access (see the README) to pull payments</span>{% endif %}</td></tr>
+{% set po = square_status.get("payouts") %}{% if po %}<tr><th>Square payouts</th><td>{{ po.at|localtime }}: {{ po.message }}</td></tr>{% endif %}
+</table></div>
+
+<h2 id="sync">Series syncing <span class="n">· {{ series|length }}</span></h2>
+<div class="tw"><table><thead><tr><th>Series</th><th>Tracked</th><th>Last synced</th><th>Latest</th></tr></thead><tbody>
+{% for s in series %}{% set st = sync_status.get(s.id) %}{% set sq = square_status.get(s.id) %}<tr><td>{{ m.series(s.id, s.name, s.code) }} <span class="mut">{{ s.name }}</span></td>
+<td>{% if s.tracked %}<span class="chip paid">tracked</span>{% else %}<span class="chip locked">not tracked</span>{% endif %}</td>
+<td>{{ (s.last_synced or "never")[:16] }}</td><td class="mut">{% if st %}parry.gg: {{ st.message }}{% endif %}{% if sq %}{{ " · " if st }}Square: {{ sq.message }}{% endif %}</td></tr>
+{% else %}<tr><td colspan="4" class="empty">No series yet: add one on <a href="/series">Series</a>.</td></tr>{% endfor %}</tbody></table></div>
+<p class="help">Tracked series are synced from parry.gg and pulled from Square automatically. Sync or pull one by hand from its series page.</p>
+
+<h2 id="items">Square items</h2>
+<p class="help">What each item you sell through Square means for a tournament's takings, matched by its name. Payments are split by the line items of the order rung up for them: venue fees, bracket fees and catch-ups (a player paying for a week they missed: it counts toward the week it was paid at) count toward the takings; anything that's not a fee, like drinks or food, is left out. Items without a meaning yet still count, as they did before.</p>
+{% set unset = items|selectattr("meaning", "none")|list %}{% if unset %}<div class="strip">{{ unset|length }} item{{ "s" if unset|length != 1 }} still need{{ "s" if unset|length == 1 }} a meaning.</div>{% endif %}
+<div class="tw"><table class="sortable"><thead><tr><th>Item</th><th>Square category</th><th>Variations</th><th class="r">Lines</th><th class="r">Total</th><th>Means</th></tr></thead><tbody>
+{% for i in items %}<tr><td>{{ i.name }}</td><td class="mut">{{ i.categories|join(", ") or "·" }}</td><td class="mut">{{ i.variations|join(", ") or "·" }}</td><td class="r">{{ i.lines }}</td>{{ m.mtd(i.cents) }}
+<td><form class="inline" method="post" action="/square/items"><input type="hidden" name="key" value="{{ i.key }}"><input type="hidden" name="name" value="{{ i.name }}"><select name="meaning" data-autosubmit>
+<option value="" {{ "selected" if i.meaning is none }}>(choose)</option>{% for key, label in meanings.items() %}<option value="{{ key }}" {{ "selected" if i.meaning == key }}>{{ label }}</option>{% endfor %}</select><noscript><button class="sec">Save</button></noscript></form></td></tr>
+{% else %}<tr><td colspan="6" class="mut">No line items pulled yet. They come with Square payments once the app is authorised to read orders and the item library (see the README).</td></tr>{% endfor %}</tbody></table></div>
+
+
+<h2 id="reminder">Weekly reminder</h2>
+<div class="tw"><table class="kv">
+<tr><th>Status</th><td>{% if reminders_on %}<span class="chip paid">on</span> <span class="mut">every {{ reminder_day|title }} from {{ reminder_hour }}:00 to {{ reminder_to|join(", ") }}</span>{% else %}<span class="chip locked">off</span> <span class="mut">set SMTP_HOST and REMINDER_TO to email the run sheet weekly (see the README)</span>{% endif %}</td></tr>
+<tr><th>Last sent</th><td>{{ last_sent.isoformat()[:16] if last_sent else "never" }}</td></tr>
+</table></div>
+<p class="help"><a href="/setup/styleguide">Style guide</a>: every part of the design, for checking colours, phone width and print.</p>
+{% endblock %}

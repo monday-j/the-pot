@@ -11,12 +11,11 @@
 <a href="/bank" class="{{ 'on' if path.startswith('/bank') }}">Bank</a>
 <span class="sep"></span>
 {% set in_records = path.startswith(('/series', '/tournaments', '/events', '/games', '/players', '/venue')) %}<a href="/series" class="{{ 'on' if in_records }}">Records</a>
-<a href="/square/items" class="{{ 'on' if path.startswith(('/square', '/setup')) }}">Setup</a>
+<a href="/setup" class="{{ 'on' if path.startswith(('/square', '/setup')) }}">Setup</a>
 <form class="logout" method="post" action="/logout"><button>Log out</button></form></nav>{% if in_records %}<nav class="sub"><a href="/series" class="{{ 'on' if path.startswith(('/series', '/tournaments')) }}">Series</a>
 <a href="/players" class="{{ 'on' if path.startswith('/players') }}">Players</a>
 <a href="/venues" class="{{ 'on' if path.startswith('/venue') }}">Venues</a>
-<a href="/events" class="{{ 'on' if path.startswith('/events') }}">Events</a>
-<a href="/games" class="{{ 'on' if path.startswith('/games') }}">Games</a></nav>{% endif %}{% endblock %}
+<a href="/events" class="{{ 'on' if path.startswith('/events') }}">Events</a></nav>{% endif %}{% endblock %}
 <main>
 {% block crumbs %}{% endblock %}
 {% if error %}<div class="strip err">{{ error }}</div>{% endif %}

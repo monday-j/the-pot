@@ -59,7 +59,9 @@ CREATE TABLE IF NOT EXISTS tournament (
     venue_bracket_pct TEXT NOT NULL DEFAULT '0',
     locked_by INTEGER REFERENCES reconciliation(id) ON DELETE SET NULL,  -- see square.lock_clear_tournaments
     covered_cents INTEGER,  -- a shortfall the organiser acknowledged and covers (#32); NULL if none
-    covered_note TEXT NOT NULL DEFAULT ''
+    covered_note TEXT NOT NULL DEFAULT '',
+    -- whether what entrants owe is tracked (#36): 'auto' once Square payments are pulled for it, 'on' or 'off'
+    takings TEXT NOT NULL DEFAULT 'auto'
 );
 CREATE TABLE IF NOT EXISTS event (
     id TEXT PRIMARY KEY,
@@ -230,6 +232,45 @@ CREATE TABLE IF NOT EXISTS entrant_override (
     created_at TEXT NOT NULL,
     PRIMARY KEY (tournament_id, player_id)
 );
+-- The ledger (#36, see ledger.py). What an entrant owes for a tournament is worked out from its entries and rules while
+-- the tournament is open; when a bank reconciliation locks it, the amounts are frozen here. player_id is the player
+-- they were reported under then (merged players are resolved when read).
+CREATE TABLE IF NOT EXISTS charge (
+    tournament_id TEXT NOT NULL REFERENCES tournament(id) ON DELETE CASCADE,
+    player_id TEXT NOT NULL,
+    due_cents INTEGER NOT NULL,
+    PRIMARY KEY (tournament_id, player_id)
+);
+-- Money from a player outside Square: a bank transfer or cash. It pays off what they owe, oldest first (the tournament
+-- given first, if any); what's left is credit for their next tournament.
+CREATE TABLE IF NOT EXISTS receipt (
+    id INTEGER PRIMARY KEY,
+    player_id TEXT NOT NULL,
+    method TEXT NOT NULL CHECK (method IN ('bank', 'cash')),
+    received_on TEXT NOT NULL,
+    amount_cents INTEGER NOT NULL CHECK (amount_cents > 0),
+    tournament_id TEXT REFERENCES tournament(id) ON DELETE SET NULL,
+    reference TEXT NOT NULL DEFAULT '',
+    note TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    reconciliation_id INTEGER REFERENCES reconciliation(id) ON DELETE SET NULL
+);
+-- Decisions about what's owed, made by hand: an entrant's fee waived, written off, paid by another player (paid_by) or
+-- sorted out some other way; a Square payment pointed at a tournament it pays for (square_payment_id); a player's
+-- credit kept as income or refunded (no tournament); or, with no player, what's missing from a tournament written off.
+CREATE TABLE IF NOT EXISTS settlement (
+    id INTEGER PRIMARY KEY,
+    tournament_id TEXT REFERENCES tournament(id) ON DELETE CASCADE,
+    player_id TEXT,
+    method TEXT NOT NULL,
+    amount_cents INTEGER NOT NULL CHECK (amount_cents > 0),
+    square_payment_id TEXT REFERENCES square_payment(id) ON DELETE CASCADE,
+    paid_by TEXT,
+    reason TEXT NOT NULL DEFAULT '',
+    settled_on TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_settlement_tournament ON settlement(tournament_id);
 -- Small bits of state that must survive restarts, e.g. when the weekly reminder was last sent (mail.py).
 CREATE TABLE IF NOT EXISTS app_state (
     key TEXT PRIMARY KEY,
@@ -304,6 +345,7 @@ ADDED_COLUMNS = {
         "locked_by": "INTEGER REFERENCES reconciliation(id) ON DELETE SET NULL",
         "covered_cents": "INTEGER",
         "covered_note": "TEXT NOT NULL DEFAULT ''",
+        "takings": "TEXT NOT NULL DEFAULT 'auto'",
     },
     "venue": {
         "square_location_id": "TEXT NOT NULL DEFAULT ''",

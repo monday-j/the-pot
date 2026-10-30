@@ -4,7 +4,7 @@ import threading
 from datetime import date, datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from . import bank, config, db, sync
+from . import bank, config, db, ledger, sync
 from .payouts import RuleError
 from .square_client import SquareClient, SquareConfigError, SquareRateLimited, environment
 
@@ -376,21 +376,29 @@ def expected_by_player(conn, tournament_id: str) -> dict:
     return expected
 
 
+def payment_rows(conn, tournament_id: str | None = None) -> list[dict]:
+    """A tournament's Square payments (every tournament's if None), oldest first, each with the player it's linked to
+    after merges (pid), its line items, its amount split by what they were for (parts) and how much of it counts
+    toward the takings (counted_cents): only its fee lines count (#31); lines not given a meaning yet still do."""
+    payments = [dict(p) for p in conn.execute(
+        """SELECT sp.*, COALESCE(a.merged_into, sp.player_id) AS pid, p.gamer_tag
+           FROM square_payment sp LEFT JOIN player a ON a.id=sp.player_id
+           LEFT JOIN player p ON p.id=COALESCE(a.merged_into, sp.player_id)
+           WHERE ? IS NULL OR sp.tournament_id=? ORDER BY sp.created_at, sp.id""", (tournament_id, tournament_id))]
+    lines = order_lines(conn, [p["order_id"] for p in payments])
+    for p in payments:
+        p["lines"] = lines.get(p["order_id"], [])
+        p["parts"] = _split(p["amount_cents"], p["lines"]) if p["amount_cents"] > 0 and not p["ignored"] else {}
+        p["counted_cents"] = (p["amount_cents"] - p["parts"].get("other", 0)) if p["parts"] else p["amount_cents"]
+    return payments
+
+
 def reconcile(conn, tournament_id: str) -> dict:
     """Expected vs taken, per player and in total. Payments marked "not a fee" (ignored) don't count, and neither do
     fully refunded ones (stored at $0), apart from their card fees: Square's payment data doesn't say whether it gave
     those back. Payments marked "no player needed" count, but aren't asked to be linked (#30)."""
     expected = expected_by_player(conn, tournament_id)
-    payments = conn.execute("""SELECT sp.*, COALESCE(a.merged_into, sp.player_id) AS pid, p.gamer_tag
-                               FROM square_payment sp LEFT JOIN player a ON a.id=sp.player_id
-                               LEFT JOIN player p ON p.id=COALESCE(a.merged_into, sp.player_id)
-                               WHERE sp.tournament_id=? ORDER BY sp.created_at""", (tournament_id,)).fetchall()
-    lines = order_lines(conn, [p["order_id"] for p in payments])
-    payments = [dict(p) for p in payments]
-    for p in payments:  # what it was for (#31): only its fee lines count; lines not given a meaning yet still do
-        p["lines"] = lines.get(p["order_id"], [])
-        p["parts"] = _split(p["amount_cents"], p["lines"]) if p["amount_cents"] > 0 and not p["ignored"] else {}
-        p["counted_cents"] = (p["amount_cents"] - p["parts"].get("other", 0)) if p["parts"] else p["amount_cents"]
+    payments = payment_rows(conn, tournament_id)
     counted = [p for p in payments if not p["ignored"] and p["amount_cents"] > 0 and p["counted_cents"] > 0]
     refunded = [p for p in payments if not p["ignored"] and p["amount_cents"] <= 0]
     paid = {}
@@ -504,6 +512,8 @@ def lock_clear_tournaments(conn) -> int:
         """SELECT id FROM tournament WHERE locked_by IS NULL AND excluded=0 AND COALESCE(start_date, '') != ''
            AND start_date <= ?""", (last["reconciled_on"],)) if r[0] not in flagged]
     conn.executemany("UPDATE tournament SET locked_by=? WHERE id=?", [(last["id"], tid) for tid in ids])
+    for tid in ids:  # what its entrants owe stops following its entries and rules (#36)
+        ledger.freeze(conn, tid)
     return len(ids)
 
 

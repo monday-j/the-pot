@@ -452,3 +452,5 @@ def init():
         _backfill_series_codes(conn)
         _migrate_venues(conn)
         _migrate_periods(conn)
+        from . import ledger  # it reads through square and sync, which import this module
+        ledger.migrate(conn)

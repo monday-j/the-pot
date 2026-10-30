@@ -21,6 +21,7 @@ open charges are "not matched yet". Payments marked "no player needed" pay its o
 cover is missing from the tournament (its gap) rather than owed by anyone in particular, until it's linked or written
 off.
 """
+import json
 import sys
 
 from . import bank, db, square, sync
@@ -419,6 +420,127 @@ def delete_receipt(conn, receipt_id: int):
     conn.execute("DELETE FROM receipt WHERE id=?", (receipt_id,))
 
 
+# --- moving older decisions in (#38) -----------------------------------------
+
+MIGRATED = "ledger_v1"
+
+
+def _insert(conn, tournament_id, player_id, method, cents, reason, day) -> dict:
+    conn.execute("""INSERT INTO settlement (tournament_id, player_id, method, amount_cents, reason, settled_on,
+                    created_at) VALUES (?,?,?,?,?,?,?)""",
+                 (tournament_id, player_id, method, cents, reason, day, sync.now()))
+    return {"tournament_id": tournament_id, "player_id": player_id, "method": method, "cents": cents, "reason": reason}
+
+
+def migrate(conn):
+    """Once (#38): freeze the charges of tournaments already locked, and turn what was decided by hand before the
+    ledger into settlements, for whatever is still open once later payments have paid what they can:
+
+    - an entrant sorted out by hand (#29, entrant_override) is settled "sorted out", with its note;
+    - a shortfall the organiser covered (#32, covered_cents) is written off "Organiser covered: <note>", up to the
+      amount covered: what's missing that nobody named owes first, then what named players still owe there, by tag.
+
+    What was done is kept for `python -m app.ledger report`. Payouts, venue payments, Square payments and deposits are
+    never touched."""
+    if conn.execute("SELECT 1 FROM app_state WHERE key=?", (MIGRATED,)).fetchone():
+        return
+    for t in tracked(conn):
+        if t["locked_by"] is not None and not conn.execute(
+                "SELECT 1 FROM charge WHERE tournament_id=? LIMIT 1", (t["id"],)).fetchone():
+            freeze(conn, t["id"])
+    done, skipped = [], []
+    b = books(conn)
+    overrides = {}
+    for r in conn.execute("""SELECT o.*, t.start_date FROM entrant_override o JOIN tournament t ON t.id=o.tournament_id
+                             ORDER BY o.created_at"""):
+        overrides.setdefault(r["tournament_id"], []).append({**dict(r), "pid": canonical(conn, r["player_id"])})
+    extra = {}  # what each player paid at a tournament beyond their own charge there
+    for p in square.payment_rows(conn):
+        if p["pid"] and not p["ignored"] and p["amount_cents"] > 0:
+            extra[(p["tournament_id"], p["pid"])] = extra.get((p["tournament_id"], p["pid"]), 0) + p["counted_cents"]
+    for (tid, pid), cents in list(extra.items()):
+        c = b["charges"].get((tid, pid))
+        extra[(tid, pid)] = cents - (c["due"] if c else 0)
+    for tid, rows in overrides.items():
+        # sorted out in pairs (#29): one entrant "paid by X", and X, who paid extra that night, "paid for them"
+        payers = [r["pid"] for r in rows if extra.get((tid, r["pid"]), 0) > 0]
+        payer = payers[0] if len(payers) == 1 else None
+        spare = extra.get((tid, payer), 0) if payer else 0
+        for r in rows:
+            c = b["charges"].get((tid, r["pid"]))
+            if c is None or c["balance"] <= 0:
+                skipped.append({"tournament_id": tid, "player_id": r["pid"], "reason": r["note"],
+                                "why": "nothing left to settle"})
+                continue
+            day = bank.local_day(r["created_at"]) if r["created_at"] else (r["start_date"] or bank.today())
+            paid_for = min(c["balance"], spare) if payer and r["pid"] != payer else 0
+            if paid_for:
+                conn.execute("""INSERT INTO settlement (tournament_id, player_id, method, amount_cents, paid_by, reason,
+                                settled_on, created_at) VALUES (?,?,?,?,?,?,?,?)""",
+                             (tid, r["pid"], "other_player", paid_for, payer, r["note"], day, sync.now()))
+                done.append({"tournament_id": tid, "player_id": r["pid"], "method": "other_player", "cents": paid_for,
+                             "reason": r["note"], "paid_by": payer})
+                spare -= paid_for
+            if c["balance"] > paid_for:
+                done.append(_insert(conn, tid, r["pid"], "other", c["balance"] - paid_for, r["note"], day))
+    b = books(conn)
+    tags = {r[0]: r[1] for r in conn.execute("SELECT id, gamer_tag FROM player")}
+    for t in conn.execute("""SELECT id, start_date, covered_cents, covered_note FROM tournament
+                             WHERE covered_cents IS NOT NULL ORDER BY start_date"""):
+        left, reason = t["covered_cents"], "Organiser covered" + (f": {t['covered_note']}" if t["covered_note"] else "")
+        day = t["start_date"] or bank.today()
+        gap = b["tournaments"].get(t["id"], {}).get("gap", 0)
+        if gap and left:
+            done.append(_insert(conn, t["id"], None, "written_off", min(gap, left), reason, day))
+            left -= min(gap, left)
+        owing = sorted((c for (tid, _), c in b["charges"].items() if tid == t["id"] and c["state"] == "owing"),
+                       key=lambda c: tags.get(c["player_id"], "").lower())
+        for c in owing:
+            if left <= 0:
+                break
+            cents = min(c["balance"], left)
+            done.append(_insert(conn, t["id"], c["player_id"], "written_off", cents, reason, day))
+            left -= cents
+        if left == t["covered_cents"]:
+            skipped.append({"tournament_id": t["id"], "player_id": None, "reason": reason,
+                            "why": "nothing left to write off"})
+    conn.execute("INSERT INTO app_state (key, value) VALUES (?, ?)",
+                 (MIGRATED, json.dumps({"at": sync.now(), "settled": done, "skipped": skipped})))
+
+
+def report(conn) -> list[str]:
+    """What the move to the ledger did (#38), and what the books say now: who owes, who has credit, and tournaments
+    with money missing that nobody named owes."""
+    row = conn.execute("SELECT value FROM app_state WHERE key=?", (MIGRATED,)).fetchone()
+    tags = {r[0]: r[1] for r in conn.execute("SELECT id, gamer_tag FROM player")}
+    names = {r[0]: f"{r[1]} ({r[2]})" for r in conn.execute("SELECT id, name, start_date FROM tournament")}
+    money = lambda cents: f"${cents / 100:,.2f}"
+    who = lambda pid: tags.get(pid, pid) if pid else "(nobody named)"
+    out = []
+    if row:
+        m = json.loads(row[0])
+        out.append(f"Moved into the ledger {m['at']}: {len(m['settled'])} settled, {len(m['skipped'])} not needed.")
+        out += [f"  {names.get(s['tournament_id'], s['tournament_id'])}: {who(s['player_id'])} "
+                f"{CHARGE_METHODS.get(s['method'], s['method'])}"
+                + (f" ({who(s['paid_by'])})" if s.get("paid_by") else "")
+                + f" {money(s['cents'])} ({s['reason']})" for s in m["settled"]]
+        out += [f"  {names.get(s['tournament_id'], s['tournament_id'])}: {who(s['player_id'])} not needed, "
+                f"{s['why']} ({s['reason']})" for s in m["skipped"]]
+    b = books(conn)
+    owing_now = owing(b)
+    out.append(f"Owed to us: {money(sum(c['balance'] for cs in owing_now.values() for c in cs))} "
+               f"by {len(owing_now)} player(s).")
+    out += [f"  {who(pid)}: " + ", ".join(f"{names.get(c['tournament_id'])} {money(c['balance'])}" for c in cs)
+            for pid, cs in sorted(owing_now.items(), key=lambda x: who(x[0]).lower())]
+    out.append(f"Credit: {money(sum(b['credit'].values()))} held by {len(b['credit'])} player(s).")
+    out += [f"  {who(pid)}: {money(cents)}" for pid, cents in sorted(b["credit"].items(), key=lambda x: who(x[0]).lower())]
+    gaps = {tid: t for tid, t in b["tournaments"].items() if t["gap"] or t["to_link"]}
+    out.append(f"Tournaments needing attention: {len(gaps)}.")
+    out += [f"  {names.get(tid)}: " + (f"{t['to_link']} payment(s) to link" if t["to_link"] else
+                                         f"{money(t['gap'])} missing that nobody named owes") for tid, t in gaps.items()]
+    return out
+
+
 # --- checks ------------------------------------------------------------------
 
 def check(conn) -> list[str]:
@@ -444,13 +566,17 @@ def check(conn) -> list[str]:
 
 
 def main(argv=None):
-    """python -m app.ledger check: exit 1 if the books don't add up."""
+    """python -m app.ledger check: exit 1 if the books don't add up. python -m app.ledger report: what the move to the
+    ledger did, and what's owed now."""
     argv = sys.argv[1:] if argv is None else argv
-    if argv[:1] != ["check"]:
-        print("usage: python -m app.ledger check", file=sys.stderr)
+    if argv[:1] not in (["check"], ["report"]):
+        print("usage: python -m app.ledger check|report", file=sys.stderr)
         return 2
     db.init()  # as the app does on startup: tables and upgrades
     with db.session() as conn:
+        if argv[0] == "report":
+            print("\n".join(report(conn)))
+            return 0
         problems = check(conn)
     for p in problems:
         print(p)

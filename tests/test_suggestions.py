@@ -58,3 +58,29 @@ def test_confirming_a_suggestion_on_the_page(client, monkeypatch):  # noqa: F811
     assert "Paid for someone?" not in page and "paid by another player $5.00 by Alice" in page
     page = client.post("/tournaments/t1/paid-for", data={"paid_by": "u1", "player_id": pid}).text
     assert "no longer a suggestion" in page
+
+
+def test_a_locked_tournament_shows_only_what_can_still_be_done(client, monkeypatch):  # noqa: F811
+    from app import bank, db
+    monkeypatch.setattr(web, "GrpcParryClient", TwoNightsClient)
+    client.post("/series", data={"name": "FNB", "custom_slug": "fnb"})
+    client.post("/periods/1", data={"entry_fee": "5"})
+    client.post("/series/1/sync")
+    for _ in range(50):
+        if sync.status[1]["state"] != "running":
+            break
+        time.sleep(0.05)
+    oauth_env(monkeypatch, "sandbox")
+    monkeypatch.setattr(web, "HttpSquareClient", lambda: FakeSquare([pay("P1", 1000, "fp-a", NIGHT1)]))
+    client.post("/tournaments/t1/square/pull")
+    client.post("/square-payments/P1/link", data={"player_id": "u1"})
+    with db.session() as c:
+        rid = bank.reconcile(c, "2026-01-05", 0, "")
+        c.execute("UPDATE tournament SET locked_by=? WHERE id='t1'", (rid,))
+    page = client.get("/tournaments/t1").text
+    for gone in ("Pull payments from Square", 'action="/square-payments/', 'action="/tournaments/t1/entry-fee"',
+                 'action="/tournaments/t1/exclude"'):
+        assert gone not in page, gone
+    assert '<a href="/players/u1">Alice</a>' in page.split("Square payments")[1]
+    assert "These settings are locked by the" in page
+    assert 'action="/tournaments/t1/paid-for"' in page and "Settle</summary>" in page  # still possible

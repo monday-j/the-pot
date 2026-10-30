@@ -238,6 +238,8 @@ def tournament_page(request: Request, tournament_id: str):
         b = ledger.books(conn)
         recon = square.reconcile(conn, tournament_id, books=b)
         suggestions = square.suggestions(conn, tournament_id, recon) if recon["tracked"] else []
+        last = bank.latest(conn)
+        locked_through = last["reconciled_on"] if last else None
         card = next((c for cards in runsheet.stages(conn, t["series_id"], books=b).values() for c in cards
                      if c["id"] == tournament_id), None)
         payouts = conn.execute("""SELECT po.*, e.name AS ename, p.gamer_tag FROM payout po
@@ -250,6 +252,6 @@ def tournament_page(request: Request, tournament_id: str):
     return render(request, "tournament.html", t=t, events=events, attendees=list(attendees.values()), venue=venue,
                   venues=venues, recon=recon, square_setup=square_setup(), meanings=square.MEANINGS, players=players,
                   states=ledger.STATES, settle_methods={**ledger.RECEIPT_METHODS, **ledger.CHARGE_METHODS},
-                  card=card, stages=runsheet.STAGES, suggestions=suggestions, payouts=payouts, prizes=prizes, venue_cents=venue_cents,
+                  card=card, stages=runsheet.STAGES, suggestions=suggestions, locked_through=locked_through, payouts=payouts, prizes=prizes, venue_cents=venue_cents,
                   to_pay=sum(p["amount_cents"] for p in payouts if p["status"] == "owed")
                   + (venue_cents if venue and venue["payment"] and venue["payment"]["status"] == "owed" else 0))

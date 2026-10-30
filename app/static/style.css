@@ -50,6 +50,8 @@ nav .sep{width:1px;align-self:stretch;background:var(--line);margin:0 .2rem}
 nav .logout{margin-left:auto}
 nav .logout button{background:none;border:0;padding:0;color:var(--dim);font:600 .85rem var(--display);text-transform:uppercase;letter-spacing:.07em;cursor:pointer}
 nav .logout button:hover{color:var(--fg)}
+nav.sub{background:var(--bg);padding-top:.3rem;padding-bottom:.3rem;gap:.2rem 1.1rem}
+nav.sub a{font-size:.85rem}
 
 /* --- type ------------------------------------------------------------------------------------------------------ */
 h1{font:800 clamp(1.7rem,3.2vw,2.4rem)/1 var(--display);text-transform:uppercase;letter-spacing:.02em;margin:.4rem 0 .5rem;text-wrap:balance}
@@ -103,7 +105,7 @@ a.card:hover{text-decoration:none;background:var(--raised)}
 .card .t{font:600 1.05rem/1.15 var(--display);letter-spacing:.02em}
 .card .d{color:var(--mut);font-size:.85rem}
 .card .chips{display:flex;flex-wrap:wrap;gap:.3rem}
-.card.owing{border-left-color:var(--owing)}.card.wait{border-left-color:var(--wait)}.card.paid{border-left-color:var(--paid)}
+.card.acc{border-left-color:var(--acc)}.card.owing{border-left-color:var(--owing)}.card.wait{border-left-color:var(--wait)}.card.paid{border-left-color:var(--paid)}
 .lane .empty{padding:.6rem}
 
 /* --- numbered steps -------------------------------------------------------------------------------------------- */

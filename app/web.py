@@ -38,7 +38,17 @@ def localtime(stamp: str) -> str:
     return when.astimezone(ZoneInfo(config.TIMEZONE)).strftime("%Y-%m-%d %H:%M")
 
 
+def shortday(day: str | None) -> str:
+    """An ISO date as "Thu 29 Oct", with the year if it isn't this year."""
+    try:
+        d = date.fromisoformat(day or "")
+    except ValueError:
+        return day or ""
+    return f"{d:%a} {d.day} {d:%b}" + (f" {d.year}" if d.year != datetime.now(ZoneInfo(config.TIMEZONE)).year else "")
+
+
 templates.env.filters["money"] = money
+templates.env.filters["shortday"] = shortday
 templates.env.filters["localtime"] = localtime
 templates.env.filters["ordinal"] = ordinal
 templates.env.filters["fromjson"] = lambda text: [str(x) for x in splits_from_json(text)]

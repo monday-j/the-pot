@@ -8,6 +8,11 @@ from tests.conftest import PASSWORD
 from tests.test_sync import FakeClient, TwoNightsClient
 
 
+def lane(page: str, key: str) -> str:
+    """One lane of the run sheet."""
+    return page.split(f'class="lane lane-{key}"')[1].split("</section>")[0]
+
+
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "DATA_DIR", tmp_path)
@@ -138,7 +143,7 @@ def test_venue_flow(seeded):
     assert "The Hall" in page and "$24.00" in page and page.count("Mark paid") == 1
     for url in ("/", "/series/1", "/tournaments/t1", "/venue?status=owed&series=1"):
         assert seeded.get(url).status_code == 200
-    assert "owed to venues" in seeded.get("/").text
+    assert "to venues" in seeded.get("/").text
     assert 'href="/tournaments/t1"' in page
 
     r = seeded.post("/venue/t1/paid", data={"next": "/venue", "note": "bank"}, follow_redirects=False)
@@ -151,17 +156,17 @@ def test_venue_flow(seeded):
     assert seeded.post("/venue/nope/paid").status_code == 404
 
 
-def test_venues_show_in_who_is_owed(seeded):
+def test_venues_show_in_to_pay(seeded):
     add_venue(seeded)
     set_terms(seeded)
     page = seeded.get("/").text
-    owing = page.split("Who is owed")[1].split("Recent tournaments")[0]
+    owing = page.split('id="to-pay"')[1]
     assert '<a href="/venues/1">The Hall</a> <span class="tag">venue</span>' in owing and "$24.00" in owing
     players = owing.count('href="/players/')
-    assert f"owed to {players} players" in page and f'<span class="n">· {players + 1}</span>' in owing
+    assert f'<span class="n">· {players + 1}</span>' in owing and f"{players + 1} recipients" in page
     with db.session() as conn:  # a venue payment whose venue has gone
         conn.execute("UPDATE venue_payment SET venue_id=NULL")
-    owing = seeded.get("/").text.split("Who is owed")[1]
+    owing = seeded.get("/").text.split('id="to-pay"')[1]
     assert '<a href="/venue?status=owed">(no venue)</a> <span class="tag">venue</span>' in owing
     seeded.post("/venue/t1/paid")
     assert "(no venue)" not in seeded.get("/").text
@@ -202,12 +207,19 @@ def test_init_upgrades_an_old_schema(tmp_path, monkeypatch):
     c.close()
 
 
-def test_dashboard_shows_total_owed_to_players_and_venues(seeded):
+def test_run_sheet_shows_total_to_pay_to_players_and_venues(seeded):
     add_venue(seeded)
     set_terms(seeded)
     page = seeded.get("/").text
     # 4 player payouts ($26 pool) + venue payable ($24.00)
-    assert "Total owed" in page and "$50.00" in page and "$26.00 to players + $24.00 to venues" in page
+    assert '<span class="k">To pay</span><span class="v">$50.00</span>' in page
+    assert "$26.00 to players + $24.00 to venues" in page
+    assert 'href="/tournaments/t1"' in lane(page, "payout") and '<span class="chip owing">$50.00 to pay</span>' in page
+    seeded.post("/venue/t1/paid")
+    with db.session() as conn:
+        conn.execute("UPDATE payout SET status='paid', paid_at='2026-01-02T00:00:00+00:00'")
+    page = seeded.get("/").text
+    assert 'href="/tournaments/t1"' in lane(page, "done") and "Nobody to pay." in page
 
 
 def test_pages_link_out_to_parry_gg(seeded):

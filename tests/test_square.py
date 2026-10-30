@@ -6,7 +6,7 @@ from app import config, ledger, square, sync, web
 from app.payouts import RuleError
 from app.square_client import SquarePayment, parse_payment
 from tests.test_sync import TwoNightsClient, conn  # noqa: F401 (fixture)
-from tests.test_web import client  # noqa: F401 (fixture)
+from tests.test_web import client, lane  # noqa: F401 (fixture)
 
 
 def oauth_env(monkeypatch, env=None):
@@ -574,14 +574,13 @@ def test_takings_issues_show_in_needs_attention(client, monkeypatch):  # noqa: F
     monkeypatch.setattr(web, "HttpSquareClient", lambda: fake)
     client.post("/tournaments/t1/square/pull")
     client.post("/square-payments/P1/link", data={"player_id": "u1"})
-    for url in ("/", "/series/FNB"):
-        page = client.get(url).text
-        assert "1 tournament with payments to link" in page and "1 payment ($5.00) to link to players" in page
-        assert 'href="/tournaments/t1#square"' in page
+    page = client.get("/series/FNB").text
+    assert "1 tournament with payments to link" in page and "1 payment ($5.00) to link to players" in page
+    assert 'href="/tournaments/t1#square"' in page
+    assert '<span class="chip link">1 to link</span>' in lane(client.get("/").text, "collect")
     client.post("/square-payments/P2/no-player")  # $10 taken of $20: $10 that nobody named owes
-    for url in ("/", "/series/FNB"):
-        assert "💳 $10.00 missing that nobody named owes" in client.get(url).text
-    assert "1</b> tournament with money missing" in client.get("/").text
+    assert "💳 $10.00 missing that nobody named owes" in client.get("/series/FNB").text
+    assert '<span class="chip wait">$10.00 missing</span>' in lane(client.get("/").text, "collect")
 
 
 def test_a_payment_linked_to_someone_not_entered_shows_on_the_page(client, monkeypatch):  # noqa: F811
@@ -664,9 +663,8 @@ def test_payments_to_link_show_softly_in_needs_attention(client, monkeypatch):  
     monkeypatch.setattr(web, "HttpSquareClient", lambda: fake)
     page = client.post("/tournaments/t1/square/pull").text
     assert "4</b> players not matched to a payment yet" in page and "not matched yet" in page
-    page = client.get("/").text
-    assert "0</b> tournaments with money missing" in page and "1 tournament with payments to link" in page
-    assert "🔗 4 payments ($20.00) to link to players" in page and "💳" not in page.split("Who is owed")[0]
+    page = lane(client.get("/").text, "collect")
+    assert '<span class="chip link">4 to link</span>' in page and "missing" not in page
 
 
 def test_an_entrant_paid_for_by_another_player(fnb):
@@ -794,7 +792,7 @@ def test_writing_off_a_gap_on_the_page(client, monkeypatch):  # noqa: F811
     client.post("/square-payments/P1/no-player")
     page = client.get("/tournaments/t1").text
     assert "$5.00 missing that nobody named owes." in page and 'action="/tournaments/t1/gap"' in page
-    assert 'href="/tournaments/t1#square"' in client.get("/").text  # flagged
+    assert 'href="/tournaments/t1"' in lane(client.get("/").text, "collect")  # flagged
     page = client.post("/tournaments/t1/gap", data={"reason": "my shout"}).text
     assert "$5.00 written off." in page
-    assert 'href="/tournaments/t1#square"' not in client.get("/").text
+    assert 'href="/tournaments/t1"' not in lane(client.get("/").text, "collect")

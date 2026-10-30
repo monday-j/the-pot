@@ -1,0 +1,48 @@
+{% extends "base.html" %}{% import "_macros.html" as m %}{% block title %}Run sheet · The Pot{% endblock %}{% block body %}
+<h1>Run sheet</h1>
+{% if not has_key() %}<div class="strip">No parry.gg API key found. Set <code>PARRY_API_KEY</code> (or <code>PARRY_API_KEY_FILE</code>) to import tournaments.</div>{% endif %}
+{% if unmapped %}<div class="strip"><a href="/square/items">{{ unmapped }} Square item{{ "s" if unmapped != 1 }} with no meaning yet</a>: until you say what {{ "they're" if unmapped != 1 else "it's" }} for, takings can't be split into fees, food and the rest.</div>{% endif %}
+
+<div class="tiles">
+<a class="tile{{ ' owing' if owed.cents }}" href="#owed"><span class="k">Owed to us</span><span class="v">{{ owed.cents|money }}</span>
+<span class="s">{% if owed.players %}{{ owed.players|length }} player{{ "s" if owed.players|length != 1 }} · oldest {{ owed.oldest_days }} day{{ "s" if owed.oldest_days != 1 }}{% else %}nobody owes anything{% endif %}{% if owed.credit %} · {{ owed.credit|money }} credit held{% endif %}</span></a>
+<a class="tile{{ ' acc' if topay.cents }}" href="#to-pay"><span class="k">To pay</span><span class="v">{{ topay.cents|money }}</span>
+<span class="s">{% if topay.recipients %}{{ topay.recipients|length }} recipient{{ "s" if topay.recipients|length != 1 }}{% if bank.estimate is not none %} · {% if topay.cents > bank.estimate %}<span class="neg">more than the {{ bank.estimate|money }} in the bank</span>{% else %}{{ (bank.estimate - topay.cents)|money }} left in the bank after{% endif %}{% endif %}{% else %}nobody is owed anything{% endif %}</span></a>
+<a class="tile" href="/bank"><span class="k">Bank</span><span class="v">{% if bank.estimate is not none %}{{ bank.estimate|money }}{% else %}?{% endif %}</span>
+<span class="s">{% if bank.last %}reconciled {% if bank.days == 0 %}today{% else %}{{ bank.days }} day{{ "s" if bank.days != 1 }} ago{% endif %}{% else %}not reconciled yet: enter the opening balance{% endif %}{% if bank.in_transit %} · {{ bank.in_transit|money }} on its way from Square{% endif %}</span></a>
+{% if bank.unexplained %}<a class="tile wait" href="/bank"><span class="k">Unexplained</span><span class="v">{{ bank.unexplained|money }}</span><span class="s">explain it on the Bank page</span></a>{% endif %}
+</div>
+
+<div class="lanes">
+{% for key in ("waiting", "collect", "payout", "done") %}{% set cards = lanes[key] %}
+<section class="lane lane-{{ key }}"><h3>{{ stages[key] }} <span class="n">{{ cards|length }}</span></h3>
+{% for t in (cards[:done_shown] if key == "done" else cards) %}
+<a class="card{{ ' wait' if key == 'collect' }}{{ ' acc' if key == 'payout' }}" href="/tournaments/{{ t.id }}"><span class="t">{{ t.name }}</span>
+<span class="d">{{ t.start_date|shortday }}{% if t.num_attendees %} · {{ t.num_attendees }} entrant{{ "s" if t.num_attendees != 1 }}{% endif %}</span>
+<span class="chips">
+{%- if t.takings and t.takings.kind == "link" %}<span class="chip link">{{ t.takings.unlinked }} to link</span>{% endif %}
+{%- if t.takings and t.takings.gap %}<span class="chip wait">{{ t.takings.gap|money }} missing</span>{% endif %}
+{%- if t.upcoming %}<span class="chip locked">upcoming</span>{% endif %}
+{%- if t.not_final %}<span class="chip wait">{{ t.not_final }} event{{ "s" if t.not_final != 1 }} not final</span>{% endif %}
+{%- if t.to_pay %}<span class="chip owing">{{ t.to_pay|money }} to pay</span>{% endif %}
+{%- if t.owed %}<span class="chip owing">{{ t.owed.cents|money }} owed by {{ t.owed.players }}</span>{% endif %}
+{%- if t.locked %}<span class="chip locked">locked</span>{% elif key == "done" %}<span class="chip paid">done</span>{% endif %}
+</span></a>
+{% else %}<p class="empty">{% if key == "waiting" %}Nothing waiting on parry.gg.{% elif key == "collect" %}All takings sorted.{% elif key == "payout" %}Nobody to pay.{% else %}Nothing done yet.{% endif %}</p>{% endfor %}
+{% if key == "done" and cards|length > done_shown %}<p class="mut">and {{ cards|length - done_shown }} earlier, on the <a href="/series">series pages</a>.</p>{% endif %}
+</section>{% endfor %}
+</div>
+
+<h2 id="owed">Owed to us <span class="n">· {{ owed.players|length }}</span></h2>
+<div class="tw"><table class="sortable"><thead><tr><th>Player</th><th>Nights</th><th>Since</th><th class="r">Owes</th></tr></thead><tbody>
+{% for p in owed.players %}<tr><td>{{ m.player(p.id, p.name) }}</td>
+<td>{% for c in p.nights %}{{ m.tournament(c.tournament_id, c.tournament_name) }} <span class="mut">{{ c.balance|money }}</span>{{ "," if not loop.last }} {% endfor %}</td>
+<td>{{ p.since|shortday }}</td>{{ m.mtd(p.cents, "neg") }}</tr>
+{% else %}<tr><td colspan="4" class="empty">Nobody owes anything.</td></tr>{% endfor %}</tbody></table></div>
+
+<h2 id="to-pay">To pay <span class="n">· {{ topay.recipients|length }}</span></h2>
+<div class="tw"><table class="sortable"><thead><tr><th>Player or venue</th><th class="r" title="Payouts owed to a player, or tournaments a venue is owed for">Payments</th><th>Oldest</th><th class="r">Owed</th></tr></thead><tbody>
+{% for p in topay.recipients %}<tr><td>{% if not p.venue %}{{ m.player(p.id, p.name) }}{% else %}{% if p.id %}{{ m.venue(p.id, p.name) }}{% else %}<a href="/venue?status=owed">{{ p.name }}</a>{% endif %} <span class="tag">venue</span>{% endif %}</td><td class="r">{{ p.n }}</td><td>{{ p.since|shortday }}</td>{{ m.mtd(p.owed) }}</tr>
+{% else %}<tr><td colspan="4" class="empty">Nobody is owed anything.</td></tr>{% endfor %}</tbody>
+{% if topay.recipients %}<tfoot><tr><td colspan="3">{{ topay.players_cents|money }} to players + {{ topay.venues_cents|money }} to venues</td>{{ m.mtd(topay.cents) }}</tr></tfoot>{% endif %}</table></div>
+{% endblock %}

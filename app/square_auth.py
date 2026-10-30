@@ -17,7 +17,9 @@ import httpx
 from . import config
 
 BASE_URLS = {"production": "https://connect.squareup.com", "sandbox": "https://connect.squareupsandbox.com"}
-READ_SCOPES = ("PAYMENTS_READ", "PAYOUTS_READ")  # all the app uses: ListPayments, ListPayouts, ListPayoutEntries
+# All the app uses: ListPayments, ListPayouts, ListPayoutEntries; RetrieveOrder and ListCatalog for line items (#31).
+READ_SCOPES = ("PAYMENTS_READ", "PAYOUTS_READ", "ORDERS_READ", "ITEMS_READ")
+BASE_SCOPES = READ_SCOPES[:2]  # what grants from before #31 have; line items need authorising again
 TOKEN_PATH, STATUS_PATH = "/oauth2/token", "/oauth2/token/status"
 RENEW_AFTER = timedelta(days=6)  # Square: "renew OAuth access tokens every 7 days or less"; they last 30 days
 
@@ -56,7 +58,7 @@ def credentials(need_refresh_token: bool = True) -> dict:
 
 
 def check_scopes(scopes) -> list:
-    """Refuse a token that can do anything but read payments and payouts."""
+    """Refuse a token that can do anything but read payments, payouts, orders and the item library."""
     extra = sorted(set(scopes) - set(READ_SCOPES))
     if extra:
         raise SquareConfigError(f"Refusing a Square token that can do more than read (it has {', '.join(extra)}). "
@@ -98,9 +100,12 @@ def access_token(http: httpx.Client, env: str, now: datetime | None = None) -> d
         cached = _cache.get(key)
         if cached and now - cached["fetched"] < RENEW_AFTER and cached["expires"] - now > timedelta(days=1):
             return cached
-        r = http.post(TOKEN_PATH, json={"client_id": creds["client_id"], "client_secret": creds["client_secret"],
-                                        "grant_type": "refresh_token", "refresh_token": creds["refresh_token"],
-                                        "scopes": list(READ_SCOPES)})  # can only narrow what was granted
+        for scopes in (READ_SCOPES, BASE_SCOPES):  # can only narrow what was granted: older grants lack line items
+            r = http.post(TOKEN_PATH, json={"client_id": creds["client_id"], "client_secret": creds["client_secret"],
+                                            "grant_type": "refresh_token", "refresh_token": creds["refresh_token"],
+                                            "scopes": list(scopes)})
+            if r.status_code == 200:
+                break
         if r.status_code != 200:
             raise SquareConfigError(f"Square ({env}) refused the refresh token ({r.status_code}: {_detail(r)}). "
                                     "If access was revoked or the app's secret changed, authorise again (see README)")

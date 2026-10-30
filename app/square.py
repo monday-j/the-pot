@@ -77,12 +77,13 @@ def _store(conn, tournament_id: str | None, p, counts: dict):
     """
     row = conn.execute("SELECT * FROM square_payment WHERE id=?", (p.id,)).fetchone()
     fields = (p.amount_cents, p.fee_cents, p.created_at, p.source_type, p.card_brand, p.last_4, p.fingerprint,
-              p.cardholder_name, p.note, p.receipt_url)
+              p.cardholder_name, p.note, p.receipt_url, p.order_id)
     if row and sync.locked(conn, "SELECT locked_by FROM tournament WHERE id=?", row["tournament_id"]):
         return  # its tournament is locked by a bank reconciliation (#28)
     if row:
         conn.execute("""UPDATE square_payment SET amount_cents=?, fee_cents=?, created_at=?, source_type=?, card_brand=?,
-                        last_4=?, fingerprint=?, cardholder_name=?, note=?, receipt_url=? WHERE id=?""", (*fields, p.id))
+                        last_4=?, fingerprint=?, cardholder_name=?, note=?, receipt_url=?, order_id=? WHERE id=?""",
+                     (*fields, p.id))
         counts["updated" if tournament_id in (None, row["tournament_id"]) else "elsewhere"] += 1
         return
     if tournament_id is None:
@@ -91,8 +92,8 @@ def _store(conn, tournament_id: str | None, p, counts: dict):
     paid_out_by = conn.execute(  # an imported Square payout that already listed this payment
         "SELECT deposit_id FROM square_payout_entry WHERE payment_id=? AND type='CHARGE' LIMIT 1", (p.id,)).fetchone()
     conn.execute("""INSERT INTO square_payment (id, tournament_id, player_id, link, amount_cents, fee_cents, created_at,
-                    source_type, card_brand, last_4, fingerprint, cardholder_name, note, receipt_url, deposit_id)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    source_type, card_brand, last_4, fingerprint, cardholder_name, note, receipt_url, order_id,
+                    deposit_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                  (p.id, tournament_id, player, "auto" if player else "none", *fields,
                   paid_out_by[0] if paid_out_by else None))
     counts["new"] += 1
@@ -123,7 +124,112 @@ def pull_tournaments(conn, client: SquareClient, tournament_ids) -> dict:
                 continue
             when = _utc(p.created_at)
             _store(conn, next((w[2] for w in windows if w[0] <= when <= w[1]), None), p, counts)
+    fetched = fetch_line_items(conn, client, tournament_ids)
+    if fetched is not None:
+        counts["orders"] = fetched
     return counts
+
+
+# --- what each payment was for (#31) ----------------------------------------
+
+FEE_MEANINGS = ("venue", "bracket", "catchup")  # count towards the takings; 'other' is not a fee
+MEANINGS = {"venue": "venue fee", "bracket": "bracket fee", "catchup": "catch-up", "other": "not a fee"}
+NO_CATEGORY, CUSTOM_AMOUNT = "(none)", "(custom)"
+
+
+def fetch_line_items(conn, client, tournament_ids) -> int | None:
+    """Fetch the orders of the tournaments' payments not fetched yet, and the item library if they sell anything it
+    doesn't know. None when the Square grant doesn't cover orders and items (it needs authorising again)."""
+    allowed = getattr(client, "line_items_allowed", None)
+    if allowed is None or not allowed():
+        return None
+    ids = list(tournament_ids)
+    marks = ",".join("?" * len(ids))
+    orders = [r[0] for r in conn.execute(
+        f"""SELECT DISTINCT sp.order_id FROM square_payment sp JOIN tournament t ON t.id=sp.tournament_id
+            WHERE sp.tournament_id IN ({marks}) AND t.locked_by IS NULL AND sp.order_id != ''
+            AND sp.order_id NOT IN (SELECT id FROM square_order)""", ids)] if ids else []
+    for order_id in orders:
+        for li in client.retrieve_order(order_id):
+            conn.execute("""INSERT OR REPLACE INTO square_order_line (order_id, uid, name, variation_name, quantity,
+                            item_type, catalog_object_id, note, total_cents) VALUES (?,?,?,?,?,?,?,?,?)""",
+                         (order_id, li.uid, li.name, li.variation_name, li.quantity, li.item_type, li.catalog_object_id,
+                          li.note, li.total_cents))
+        conn.execute("INSERT OR REPLACE INTO square_order (id, fetched_at) VALUES (?,?)", (order_id, sync.now()))
+    if conn.execute("""SELECT 1 FROM square_order_line WHERE catalog_object_id != ''
+                       AND catalog_object_id NOT IN (SELECT id FROM square_variation) LIMIT 1""").fetchone():
+        refresh_catalog(conn, client)
+    return len(orders)
+
+
+def refresh_catalog(conn, client):
+    """Store the item library's variations (with their item's category) and category names. Meanings are kept."""
+    items, names = client.list_catalog()
+    for cid, name in names.items():
+        conn.execute("INSERT INTO square_category (id, name) VALUES (?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name",
+                     (cid, name))
+    for item in items:
+        for vid in item.variation_ids:
+            conn.execute("INSERT OR REPLACE INTO square_variation (id, item_name, category_id) VALUES (?,?,?)",
+                         (vid, item.name, item.category_id))
+
+
+def order_lines(conn, order_ids) -> dict:
+    """Line items by order id, each with its category (id, name) and that category's meaning (None: not chosen)."""
+    ids = sorted({o for o in order_ids if o})
+    if not ids:
+        return {}
+    out = {}
+    for r in conn.execute(
+            f"""SELECT l.*, CASE WHEN l.item_type='CUSTOM_AMOUNT' OR l.catalog_object_id='' THEN '{CUSTOM_AMOUNT}'
+                                 ELSE COALESCE(NULLIF(v.category_id, ''), '{NO_CATEGORY}') END AS category_id
+                FROM square_order_line l LEFT JOIN square_variation v ON v.id=l.catalog_object_id
+                WHERE l.order_id IN ({",".join("?" * len(ids))}) ORDER BY l.order_id, l.uid""", ids):
+        out.setdefault(r["order_id"], []).append(dict(r))
+    cats = {r["id"]: r for r in conn.execute("SELECT * FROM square_category")}
+    for lines in out.values():
+        for line in lines:
+            cat = cats.get(line["category_id"])
+            line["category"] = (cat["name"] if cat else "") or {NO_CATEGORY: "No category",
+                                                                CUSTOM_AMOUNT: "Custom amount"}.get(line["category_id"], "?")
+            line["meaning"] = cat["meaning"] if cat else None
+    return out
+
+
+def _split(amount: int, lines: list) -> dict:
+    """A payment's amount split by what its order's lines were for (pro rata, so a split tender or a partial refund
+    shares them out): {meaning or None (not chosen yet): cents}."""
+    total = sum(l["total_cents"] for l in lines)
+    if not lines or total <= 0:
+        return {}
+    parts = {}
+    for l in lines:
+        parts[l["meaning"]] = parts.get(l["meaning"], 0) + l["total_cents"]
+    out = {m: round(amount * c / total) for m, c in parts.items()}
+    biggest = max(out, key=lambda m: parts[m])
+    out[biggest] += amount - sum(out.values())  # rounding: the parts add up to the payment
+    return out
+
+
+def category_meanings(conn) -> list[dict]:
+    """Every category the pulled orders' lines fall under, with how much was sold under it and its meaning."""
+    lines = order_lines(conn, [r[0] for r in conn.execute("SELECT DISTINCT order_id FROM square_order_line")])
+    seen = {}
+    for line in (l for ls in lines.values() for l in ls):
+        c = seen.setdefault(line["category_id"], {"id": line["category_id"], "name": line["category"],
+                                                  "meaning": line["meaning"], "lines": 0, "cents": 0, "examples": set()})
+        c["lines"] += 1
+        c["cents"] += line["total_cents"]
+        c["examples"].add(line["name"] or line["note"] or "?")
+    return sorted(({**c, "examples": sorted(c["examples"])[:6]} for c in seen.values()),
+                  key=lambda c: (c["meaning"] is not None, c["name"].lower()))
+
+
+def set_meaning(conn, category_id: str, meaning: str | None):
+    if meaning is not None and meaning not in MEANINGS:
+        raise RuleError("Unknown meaning")
+    conn.execute("""INSERT INTO square_category (id, name, meaning) VALUES (?, '', ?)
+                    ON CONFLICT(id) DO UPDATE SET meaning=excluded.meaning""", (category_id, meaning))
 
 
 def pull_tournament(conn, client: SquareClient, tournament_id: str) -> dict:
@@ -269,12 +375,18 @@ def reconcile(conn, tournament_id: str) -> dict:
                                FROM square_payment sp LEFT JOIN player a ON a.id=sp.player_id
                                LEFT JOIN player p ON p.id=COALESCE(a.merged_into, sp.player_id)
                                WHERE sp.tournament_id=? ORDER BY sp.created_at""", (tournament_id,)).fetchall()
-    counted = [p for p in payments if not p["ignored"] and p["amount_cents"] > 0]
+    lines = order_lines(conn, [p["order_id"] for p in payments])
+    payments = [dict(p) for p in payments]
+    for p in payments:  # what it was for (#31): only its fee lines count; lines not given a meaning yet still do
+        p["lines"] = lines.get(p["order_id"], [])
+        p["parts"] = _split(p["amount_cents"], p["lines"]) if p["amount_cents"] > 0 and not p["ignored"] else {}
+        p["counted_cents"] = (p["amount_cents"] - p["parts"].get("other", 0)) if p["parts"] else p["amount_cents"]
+    counted = [p for p in payments if not p["ignored"] and p["amount_cents"] > 0 and p["counted_cents"] > 0]
     refunded = [p for p in payments if not p["ignored"] and p["amount_cents"] <= 0]
     paid = {}
     for p in counted:
         if p["pid"]:
-            paid[p["pid"]] = paid.get(p["pid"], 0) + p["amount_cents"]
+            paid[p["pid"]] = paid.get(p["pid"], 0) + p["counted_cents"]
     tags = {r["id"]: r["gamer_tag"] for r in conn.execute(
         "SELECT p.id, p.gamer_tag FROM tournament_entry_c te JOIN player p ON p.id=te.player_id WHERE te.tournament_id=?",
         (tournament_id,))}
@@ -300,12 +412,19 @@ def reconcile(conn, tournament_id: str) -> dict:
             r["state"] = "resolved"
     order = {"unpaid": 0, "short": 0, "over": 0, "unmatched": 1, "resolved": 2, "ok": 2}
     players.sort(key=lambda r: (order[r["state"]], r["tag"].lower()))
-    expected_total, taken = sum(expected.values()), sum(p["amount_cents"] for p in counted)
+    expected_total, taken = sum(expected.values()), sum(p["counted_cents"] for p in counted)
+    by_meaning = {}
+    for p in payments:
+        for m, c in p["parts"].items():
+            by_meaning[m] = by_meaning.get(m, 0) + c
     waived = sum(max(-r["diff"], 0) for r in players if r["state"] == "resolved")  # not missing: it's sorted out
-    fees = sum(p["fee_cents"] or 0 for p in counted + refunded)
-    banked = sum(p["amount_cents"] - (p["fee_cents"] or 0) for p in counted + refunded if p["deposit_id"])
+    takings = [p for p in payments if not p["ignored"]]  # card fees and banking cover whole payments, drinks too
+    fees = sum(p["fee_cents"] or 0 for p in takings)
+    banked = sum(p["amount_cents"] - (p["fee_cents"] or 0) for p in takings if p["deposit_id"])
+    sold = sum(p["amount_cents"] for p in takings if p["amount_cents"] > 0)
     return {"payments": payments, "players": players, "expected": expected_total, "taken": taken,
-            "fees": fees, "net": taken - fees, "banked": banked, "fees_pending": sum(1 for p in counted if p["fee_cents"] is None),
+            "fees": fees, "net": sold - fees, "banked": banked, "sold": sold, "by_meaning": by_meaning,
+            "unmapped": len({l["category_id"] for p in payments for l in p["lines"] if l["meaning"] is None}), "fees_pending": sum(1 for p in counted if p["fee_cents"] is None),
             "difference": taken - expected_total, "attendees": len(expected), "count": len(counted),
             "unlinked": len(to_link), "unlinked_cents": sum(p["amount_cents"] for p in to_link),
             "no_player": len(unlinked) - len(to_link),

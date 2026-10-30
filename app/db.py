@@ -178,7 +178,40 @@ CREATE TABLE IF NOT EXISTS square_payment (
     cardholder_name TEXT NOT NULL DEFAULT '',
     note TEXT NOT NULL DEFAULT '',
     receipt_url TEXT NOT NULL DEFAULT '',
-    deposit_id INTEGER REFERENCES bank_deposit(id) ON DELETE SET NULL
+    deposit_id INTEGER REFERENCES bank_deposit(id) ON DELETE SET NULL,
+    order_id TEXT NOT NULL DEFAULT ''
+);
+-- What each Square order sold (#31): its line items, fetched once per order. A payment's order_id points here; an order
+-- paid in more than one payment (split tender) shares its lines between them, pro rata.
+CREATE TABLE IF NOT EXISTS square_order_line (
+    order_id TEXT NOT NULL,
+    uid TEXT NOT NULL,
+    name TEXT NOT NULL DEFAULT '',
+    variation_name TEXT NOT NULL DEFAULT '',
+    quantity TEXT NOT NULL DEFAULT '1',
+    item_type TEXT NOT NULL DEFAULT 'ITEM',
+    catalog_object_id TEXT NOT NULL DEFAULT '',
+    note TEXT NOT NULL DEFAULT '',
+    total_cents INTEGER NOT NULL,
+    PRIMARY KEY (order_id, uid)
+);
+-- Orders already fetched, including ones with no lines, so they aren't fetched again.
+CREATE TABLE IF NOT EXISTS square_order (
+    id TEXT PRIMARY KEY,
+    fetched_at TEXT NOT NULL
+);
+-- Item variations in the Square item library, with their item and its category (refreshed when an unknown one turns up).
+CREATE TABLE IF NOT EXISTS square_variation (
+    id TEXT PRIMARY KEY,
+    item_name TEXT NOT NULL DEFAULT '',
+    category_id TEXT NOT NULL DEFAULT ''
+);
+-- What each Square category means for the takings (#31): 'venue', 'bracket', 'catchup' (all count) or 'other' (not a
+-- fee: left out); NULL until chosen. Lines with no category are filed under '(none)', custom amounts under '(custom)'.
+CREATE TABLE IF NOT EXISTS square_category (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL DEFAULT '',
+    meaning TEXT
 );
 -- An entrant whose payment is sorted out some other way (someone else paid for them, a waived fee), by hand (#29).
 -- player_id is the player they're reported under (after merges), as in square.reconcile.
@@ -267,6 +300,7 @@ ADDED_COLUMNS = {
     },
     "square_payment": {
         "no_player": "INTEGER NOT NULL DEFAULT 0",
+        "order_id": "TEXT NOT NULL DEFAULT ''",
         "fee_cents": "INTEGER",
         "deposit_id": "INTEGER REFERENCES bank_deposit(id) ON DELETE SET NULL",
     },

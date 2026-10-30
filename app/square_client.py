@@ -1,4 +1,4 @@
-"""The only code that talks to Square: lists payments over the Payments API (REST)."""
+"""The only code that talks to Square (REST): payments, payouts, and the orders and item library behind payments."""
 import logging
 import random
 import time
@@ -38,6 +38,7 @@ class SquarePayment:
     receipt_url: str = ""
     location_id: str = ""
     fee_cents: int | None = None  # processing fees Square kept; None until Square adds them
+    order_id: str = ""  # the order rung up for it: its line items say what it was for (#31)
 
 
 @dataclass
@@ -64,10 +65,34 @@ class SquarePayoutEntry:
     effective_at: str = ""
 
 
+@dataclass
+class SquareLineItem:
+    """One line of an order: what was sold. catalog_object_id is the item variation (blank for a custom amount)."""
+    uid: str
+    name: str
+    total_cents: int  # after discounts, with tax
+    quantity: str = "1"
+    variation_name: str = ""
+    item_type: str = "ITEM"  # ITEM, CUSTOM_AMOUNT or GIFT_CARD
+    catalog_object_id: str = ""
+    note: str = ""
+
+
+@dataclass
+class SquareCatalogItem:
+    """An item in the item library, with its variations and the category it reports under."""
+    id: str
+    name: str
+    variation_ids: list
+    category_id: str = ""
+
+
 class SquareClient(Protocol):
     def list_payments(self, begin_time: str, end_time: str, location_id: str = "") -> list[SquarePayment]: ...
     def list_payouts(self, begin_time: str, end_time: str, location_id: str = "") -> list[SquarePayout]: ...
     def list_payout_entries(self, payout_id: str) -> list[SquarePayoutEntry]: ...
+    def retrieve_order(self, order_id: str) -> list[SquareLineItem]: ...
+    def list_catalog(self) -> tuple[list[SquareCatalogItem], dict]: ...
 
 
 class SquareRateLimited(RuntimeError):
@@ -93,7 +118,8 @@ def parse_payment(p: dict) -> SquarePayment:
         source_type=p.get("source_type", ""), card_brand=card.get("card_brand", ""), last_4=card.get("last_4", ""),
         fingerprint=card.get("fingerprint", ""), cardholder_name=card.get("cardholder_name", ""),
         note=p.get("note", ""), receipt_url=p.get("receipt_url", ""), location_id=p.get("location_id", ""),
-        fee_cents=sum((f.get("amount_money") or {}).get("amount", 0) for f in fees) if fees else None)
+        fee_cents=sum((f.get("amount_money") or {}).get("amount", 0) for f in fees) if fees else None,
+        order_id=p.get("order_id", ""))
 
 
 def _cents(money) -> int:
@@ -112,6 +138,22 @@ def parse_payout_entry(e: dict) -> SquarePayoutEntry:
     return SquarePayoutEntry(id=e["id"], type=e.get("type", ""), payment_id=details.get("payment_id", ""),
                              gross_cents=_cents(e.get("gross_amount_money")), fee_cents=_cents(e.get("fee_amount_money")),
                              net_cents=_cents(e.get("net_amount_money")), effective_at=e.get("effective_at", ""))
+
+
+def parse_line_item(li: dict) -> SquareLineItem:
+    return SquareLineItem(uid=li.get("uid", ""), name=li.get("name", ""), total_cents=_cents(li.get("total_money")),
+                          quantity=li.get("quantity", "1"), variation_name=li.get("variation_name", ""),
+                          item_type=li.get("item_type", "ITEM"), catalog_object_id=li.get("catalog_object_id", ""),
+                          note=li.get("note", ""))
+
+
+def parse_catalog_item(o: dict) -> SquareCatalogItem:
+    """Its category: the reporting category, else the first of its categories (category_id before 2023-12)."""
+    data = o.get("item_data") or {}
+    category = ((data.get("reporting_category") or {}).get("id") or
+                next((c.get("id", "") for c in data.get("categories") or []), "") or data.get("category_id", ""))
+    return SquareCatalogItem(id=o["id"], name=data.get("name", ""), category_id=category or "",
+                             variation_ids=[v["id"] for v in data.get("variations") or [] if v.get("id")])
 
 
 class HttpSquareClient:
@@ -169,22 +211,25 @@ class HttpSquareClient:
             self._sleep(self._backoff(attempt, r.headers.get("retry-after")))
         raise AssertionError("unreachable")
 
-    def _list(self, path: str, key: str, params: dict, permission: str) -> list[dict]:
+    def _check(self, r: httpx.Response, permission: str):
+        if r.status_code != 200:  # Square's error detail, never the request headers
+            detail = "; ".join(e.get("detail", e.get("code", "")) for e in r.json().get("errors", [])) \
+                if r.headers.get("content-type", "").startswith("application/json") else r.reason_phrase
+            if r.status_code == 401:
+                square_auth.forget()  # revoked or expired: the next client refreshes
+            hint = {401: f" Square rejected the access token (revoked or expired?); try again, and authorise again "
+                         f"if it keeps happening (see README). SQUARE_ENV must match the Square app's credentials.",
+                    403: f" The read-only access doesn't include {permission}: authorise again (see README)."
+                    }.get(r.status_code, "")
+            raise RuntimeError(f"Square ({self.env}) returned {r.status_code}: {detail.rstrip('.')}.{hint}")
+
+    def _list(self, path: str, key: str, params: dict, permission: str, limit: bool = True) -> list[dict]:
         """Every item of a paged list endpoint."""
-        params = {**params, "limit": 100}
+        params = {**params, "limit": 100} if limit else dict(params)
         out = []
         while True:
             r = self._get(path, params)
-            if r.status_code != 200:  # Square's error detail, never the request headers
-                detail = "; ".join(e.get("detail", e.get("code", "")) for e in r.json().get("errors", [])) \
-                    if r.headers.get("content-type", "").startswith("application/json") else r.reason_phrase
-                if r.status_code == 401:
-                    square_auth.forget()  # revoked or expired: the next client refreshes
-                hint = {401: f" Square rejected the access token (revoked or expired?); try again, and authorise again "
-                             f"if it keeps happening (see README). SQUARE_ENV must match the Square app's credentials.",
-                        403: f" The read-only access doesn't include {permission}: authorise again (see README)."
-                        }.get(r.status_code, "")
-                raise RuntimeError(f"Square ({self.env}) returned {r.status_code}: {detail.rstrip('.')}.{hint}")
+            self._check(r, permission)
             body = r.json()
             out += body.get(key, [])
             if not body.get("cursor"):
@@ -208,3 +253,20 @@ class HttpSquareClient:
     def list_payout_entries(self, payout_id: str) -> list[SquarePayoutEntry]:
         return [parse_payout_entry(e) for e in self._list(f"/v2/payouts/{quote(payout_id, safe='')}/payout-entries", "payout_entries",
                                                           {"sort_order": "ASC"}, "PAYOUTS_READ")]
+
+    def line_items_allowed(self) -> bool:
+        """Whether the grant includes orders and the item library (authorised again since #31)."""
+        return {"ORDERS_READ", "ITEMS_READ"} <= set(self.scopes)
+
+    def retrieve_order(self, order_id: str) -> list[SquareLineItem]:
+        """An order's line items (RetrieveOrder: a GET, unlike the batch endpoint)."""
+        r = self._get(f"/v2/orders/{quote(order_id, safe='')}", {})
+        self._check(r, "ORDERS_READ")
+        return [parse_line_item(li) for li in (r.json().get("order") or {}).get("line_items") or []]
+
+    def list_catalog(self) -> tuple[list[SquareCatalogItem], dict]:
+        """The item library's items (with their variations) and category names by id."""
+        objects = self._list("/v2/catalog/list", "objects", {"types": "ITEM,CATEGORY"}, "ITEMS_READ", limit=False)
+        items = [parse_catalog_item(o) for o in objects if o.get("type") == "ITEM"]
+        names = {o["id"]: (o.get("category_data") or {}).get("name", "") for o in objects if o.get("type") == "CATEGORY"}
+        return items, names

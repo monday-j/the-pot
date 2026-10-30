@@ -28,7 +28,7 @@ def cmd_url():
     with os.fdopen(fd, "w") as f:
         f.write(state)
     print(f"1. In the Square Developer Console, set this app's {env} OAuth redirect URL to:\n   {config.square_redirect_url()}")
-    print(f"2. Sign in as the account owner and open this link (it asks for {' and '.join(square_auth.READ_SCOPES)} only;")
+    print(f"2. Sign in as the account owner and open this link (it asks for {', '.join(square_auth.READ_SCOPES)} only;")
     print("   check the permissions Square lists before approving):")
     print(f"   {square_auth.authorize_url(env, creds['client_id'], state)}")
     print("3. Within 5 minutes, run:  python -m app.square_oauth exchange <code> <state>  (the page shows both)")

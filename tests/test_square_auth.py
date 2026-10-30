@@ -13,8 +13,9 @@ from tests.test_square import oauth_env
 
 class FakeOAuth:
     """Square's OAuth endpoints plus a payments endpoint, recording every request."""
-    def __init__(self, scopes=("PAYMENTS_READ", "PAYOUTS_READ"), refresh_status=200):
+    def __init__(self, scopes=("PAYMENTS_READ", "PAYOUTS_READ"), refresh_status=200, cant_widen=False):
         self.scopes, self.refresh_status, self.requests = list(scopes), refresh_status, []
+        self.cant_widen = cant_widen  # refuse a refresh asking for scopes the grant doesn't have, like Square
 
     def __call__(self, request):
         self.requests.append(request)
@@ -22,6 +23,8 @@ class FakeOAuth:
             body = json.loads(request.content)
             if body["grant_type"] == "refresh_token" and self.refresh_status != 200:
                 return httpx.Response(self.refresh_status, json={"errors": [{"detail": "refresh token revoked"}]})
+            if self.cant_widen and body["grant_type"] == "refresh_token" and not set(body["scopes"]) <= set(self.scopes):
+                return httpx.Response(400, json={"errors": [{"detail": "scopes not granted"}]})  # can't widen
             return httpx.Response(200, json={"access_token": f"EAAA-{len(self.requests)}",
                                              "expires_at": "2099-01-01T00:00:00Z", "refresh_token": "refresh-new",
                                              "merchant_id": "M1"})
@@ -64,17 +67,29 @@ def test_missing_settings_are_named(monkeypatch):
         square_auth.credentials()
 
 
+ALL_READ = ["PAYMENTS_READ", "PAYOUTS_READ", "ORDERS_READ", "ITEMS_READ"]
+
+
 def test_access_token_is_refreshed_read_only_and_checked(monkeypatch):
     oauth_env(monkeypatch)
-    fake = FakeOAuth()
+    fake = FakeOAuth(ALL_READ)
+    with square_http(fake) as http:
+        token = square_auth.access_token(http, "sandbox")
+    assert token["scopes"] == sorted(ALL_READ)
+    refresh = json.loads(fake.token_calls()[0].content)
+    assert refresh == {"client_id": "sq0idp-test", "client_secret": "sq0csp-secret", "grant_type": "refresh_token",
+                       "refresh_token": "refresh-1", "scopes": ALL_READ}
+    status = [r for r in fake.requests if r.url.path == "/oauth2/token/status"][0]
+    assert status.headers["authorization"] == f"Bearer {token['token']}"  # the new token's own scopes
+
+
+def test_a_grant_from_before_line_items_still_refreshes(monkeypatch):
+    oauth_env(monkeypatch)
+    fake = FakeOAuth(cant_widen=True)  # payments and payouts only
     with square_http(fake) as http:
         token = square_auth.access_token(http, "sandbox")
     assert token["scopes"] == ["PAYMENTS_READ", "PAYOUTS_READ"]
-    refresh = json.loads(fake.token_calls()[0].content)
-    assert refresh == {"client_id": "sq0idp-test", "client_secret": "sq0csp-secret", "grant_type": "refresh_token",
-                       "refresh_token": "refresh-1", "scopes": ["PAYMENTS_READ", "PAYOUTS_READ"]}
-    status = [r for r in fake.requests if r.url.path == "/oauth2/token/status"][0]
-    assert status.headers["authorization"] == f"Bearer {token['token']}"  # the new token's own scopes
+    assert [json.loads(r.content)["scopes"] for r in fake.token_calls()] == [ALL_READ, ALL_READ[:2]]
 
 
 @pytest.mark.parametrize("scopes", [("PAYMENTS_READ", "PAYMENTS_WRITE"), ("PAYMENTS_READ", "PAYOUTS_READ", "ORDERS_WRITE"),
@@ -132,7 +147,7 @@ def test_a_401_from_square_drops_the_cached_token(monkeypatch):
 def test_authorize_url_asks_for_read_scopes_only():
     url = square_auth.authorize_url("production", "sq0idp-test", "STATE")
     assert url.startswith("https://connect.squareup.com/oauth2/authorize?")
-    assert "scope=PAYMENTS_READ+PAYOUTS_READ" in url and "session=false" in url and "state=STATE" in url
+    assert "scope=PAYMENTS_READ+PAYOUTS_READ+ORDERS_READ+ITEMS_READ" in url and "session=false" in url and "state=STATE" in url
     assert "WRITE" not in url
 
 
@@ -154,7 +169,7 @@ def test_setup_tool_url_and_exchange(setup_tool, capsys):
     out = capsys.readouterr().out
     state = square_oauth.STATE_FILE.read_text()
     assert stat.S_IMODE(os.stat(square_oauth.STATE_FILE).st_mode) == 0o600
-    assert f"state={state}" in out and "scope=PAYMENTS_READ+PAYOUTS_READ" in out
+    assert f"state={state}" in out and "scope=PAYMENTS_READ+PAYOUTS_READ+ORDERS_READ+ITEMS_READ" in out
     assert "https://monday-j.github.io/the-pot/square-oauth.html" in out
 
     with pytest.raises(SystemExit, match="state doesn't match"):

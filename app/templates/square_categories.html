@@ -1,0 +1,11 @@
+{% extends "base.html" %}{% import "_macros.html" as m %}
+{% block body %}
+<h1>Square categories</h1>
+<p class="help">What each category in your Square item library means for a tournament's takings. Payments are split by the line items of the order rung up for them: venue fees, bracket fees and catch-ups (a player paying for a week they missed: it counts toward the week it was paid at) count toward the takings; anything that's not a fee, like drinks or food, is left out. Lines in a category without a meaning yet still count, as they did before.</p>
+{% set unset = categories|selectattr("meaning", "none")|list %}{% if unset %}<div class="strip">{{ unset|length }} categor{{ "ies" if unset|length != 1 else "y" }} still need{{ "s" if unset|length == 1 }} a meaning.</div>{% endif %}
+<table class="sortable"><thead><tr><th>Category</th><th>Sold, e.g.</th><th class="r">Lines</th><th class="r">Total</th><th>Means</th></tr></thead><tbody>
+{% for c in categories %}<tr><td>{{ c.name }}</td><td class="mut">{{ c.examples|join(", ") }}</td><td class="r">{{ c.lines }}</td>{{ m.mtd(c.cents) }}
+<td><form class="inline" method="post" action="/square/categories"><input type="hidden" name="category_id" value="{{ c.id }}"><select name="meaning" data-autosubmit>
+<option value="" {{ "selected" if c.meaning is none }}>(choose)</option>{% for key, label in meanings.items() %}<option value="{{ key }}" {{ "selected" if c.meaning == key }}>{{ label }}</option>{% endfor %}</select><noscript><button class="sec">Save</button></noscript></form></td></tr>
+{% else %}<tr><td colspan="5" class="mut">No line items pulled yet. They come with Square payments once the app is authorised to read orders and the item library (see the README).</td></tr>{% endfor %}</tbody></table>
+{% endblock %}

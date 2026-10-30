@@ -53,6 +53,14 @@ you've paid them and what you still owe. For your LAN, behind one shared passwor
   payments are neither linked nor marked.
   When an entrant's fee was sorted out some other way (someone else paid for them, or it was waived), mark them
   **Sorted out** in the "Who paid" table with a note saying how: they no longer count as unpaid or missing.
+- **What each payment was for**: with orders and items authorised, pulling payments also fetches each payment's order
+  (its line items) and, when it sells something new, the item library. On **Square categories** (linked from each
+  tournament's Square section) give each category a meaning: venue fee, bracket fee or catch-up (a player paying for
+  a week they missed; it counts toward the week it's paid at) count toward the takings; "not a fee" (drinks, food) is
+  left out. Line items show under each payment. A payment split across both counts only its fee share, pro rata, and
+  one that was all drinks isn't counted or asked to be linked. Categories without a meaning still count, as before.
+  A grant from before this (payments and payouts only) keeps working without line items: authorise again (the steps
+  under "Square: read-only access") to turn them on.
 - **Card fees**: each Square payment's processing fee (as Square reports it, tax adjustments included) is stored and
   shown, with gross, fees and net per tournament and per series. Square adds the fee a little after the payment, so
   a fresh payment shows "pending" until a later pull fills it in.
@@ -108,7 +116,8 @@ image digest and the GitHub Actions SHAs, and CI fails on any known vulnerabilit
 
 The app only ever reads from Square, and it's set up so the server can't do anything else. Square's personal
 access tokens give "unrestricted" access to the whole account and can't be limited, so the app refuses them. Instead
-you authorise the app once, through Square OAuth, for **only** `PAYMENTS_READ` and `PAYOUTS_READ`. The server keeps
+you authorise the app once, through Square OAuth, for **only** `PAYMENTS_READ`, `PAYOUTS_READ`, `ORDERS_READ` and
+`ITEMS_READ` (orders and the item library say what each payment was for). The server keeps
 the app's client id and secret and that grant's refresh token, and swaps them for short-lived access tokens held in
 memory only, renewed at least every 6 days. Square only issues tokens with the granted read scopes, so even with
 everything on the server, nobody can take a payment, refund money or change anything. Every new token's scopes are
@@ -124,7 +133,7 @@ One-time setup (per environment, `sandbox` or `production`):
 2. In the server's `.env`, set `SQUARE_ENV`, `SQUARE_CLIENT_ID` and `SQUARE_CLIENT_SECRET`, then recreate the
    container (`docker compose up -d`).
 3. Run `docker compose exec pot python -m app.square_oauth url`, open the link it prints, signed in as the account
-   owner, and check that Square lists only permission to read payments and payouts before approving. (For sandbox,
+   owner, and check that Square lists only permission to read payments, payouts, orders and items before approving. (For sandbox,
    open the sandbox test account's dashboard from the Developer Console first.)
 4. Within 5 minutes, run the `python -m app.square_oauth exchange ...` command the redirect page shows (prefix it
    with `docker compose exec pot`). It checks the grant is read-only and prints `SQUARE_REFRESH_TOKEN=...` once: add it

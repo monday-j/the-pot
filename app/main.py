@@ -831,7 +831,25 @@ def tournament_page(request: Request, tournament_id: str):
         venues = venue_options(conn)
         recon = square.reconcile(conn, tournament_id)
     return render(request, "tournament.html", t=t, events=events, attendees=list(attendees.values()), venue=venue,
-                  venues=venues, recon=recon, square_setup=square_setup())
+                  venues=venues, recon=recon, square_setup=square_setup(), meanings=square.MEANINGS)
+
+
+@app.get("/square/categories")
+def square_categories(request: Request):
+    with db.session() as conn:
+        categories = square.category_meanings(conn)
+    return render(request, "square_categories.html", categories=categories, meanings=square.MEANINGS)
+
+
+@app.post("/square/categories")
+def save_square_category(category_id: str = Form(...), meaning: str = Form("")):
+    try:
+        with db.session() as conn:
+            square.set_meaning(conn, category_id, meaning or None)
+            square.lock_clear_tournaments(conn)
+    except RuleError as e:
+        return back("/square/categories", str(e))
+    return back("/square/categories")
 
 
 @app.get("/events")

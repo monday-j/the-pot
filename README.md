@@ -1,101 +1,131 @@
 # The Pot
 
-Automates tournament payouts for recurring [parry.gg](https://parry.gg) tournaments. Track a series, import its
-history, set payout rules per game or event, and keep a profile for every player with their placements, what
-you've paid them and what you still owe. For your LAN, behind one shared password; SQLite, run as a small web server.
+Runs the money for recurring [parry.gg](https://parry.gg) tournaments: what each entrant owes and paid on the night,
+who still owes, what to pay the winners and the venue, and whether the bank agrees. For your LAN, behind one shared
+password; SQLite, run as a small web server.
 
-## How it works
+The app follows the night through three steps, **Collect → Pay out → Reconcile**. Series, players, venues and events
+are the records behind them, all linked to each other.
 
-- **Series**: parry.gg has no series object, so a series is either a *custom slug* (the quick link shared by
-  every tournament in the series, e.g. `fridaybrawl`, matched exactly by the API) or, as a fallback, a *match
-  pattern* (e.g. `Friday Night Brawl`) matched, ignoring case and punctuation, against each tournament's name
-  and URL slug, whoever created it. A custom slug takes precedence when both are set.
-  Individual tournaments can also be added by link or excluded.
-- **Series code**: every series has a unique three-letter code (e.g. `FNB`). Links use it (`/series/FNB`; the old numeric
-  URLs redirect) and tables show it, with the full name on hover. Leave it blank when adding a series to get one suggested
-  from the name; existing series are given one automatically on upgrade, and you can change it in the series settings.
-- **Rules** (per game, with optional single-event override): bracket fee, number of places paid, fixed pool,
-  % of bracket fees into the pool, % of venue fees into the pool, and a split % per place (e.g. `50,30,20`).
-  The tournament-wide venue fee is part of the series' terms (overridable per tournament).
-- **Terms over time**: a series' venue, venue fee and game rules are dated. When something changes (e.g. the series
-  moves to a new venue), start new terms from that date on the series page: the game rules in effect then are copied
-  so only what changed needs editing. Each tournament uses the terms in effect on its date, so earlier tournaments keep
-  their old venue, fee and rules, and newly synced tournaments get the latest terms. Single-event overrides apply
-  whatever the terms. Databases from before this get one set of terms "from the start" holding their current settings.
-- **Pool** = fixed pool + bracket-fee share + entry-fee share. Ties share the combined amount of the places they occupy.
-  Money is integer cents; splits are exact to the cent.
-- **Payments**: each payout starts as *owed*; mark it paid per payout or settle everything owed to a player.
-  Re-syncing never changes an amount you've already marked paid: a changed result shows a `≠` marker instead.
-- **Merging players**: someone imported under two parry.gg accounts (e.g. `Alice` and `alice`) can be merged from
-  either player's page; the Players page suggests tags that differ only in case or punctuation. The merged player's
-  history and payouts show under the main one, including on future syncs, and Unmerge puts them back. Players who
-  entered the same event can't be merged.
-- **Venues** are tracked on their own (Venues page: each venue's series, tournaments held there, owed and paid). A
-  venue's cut is made of up to three parts that add together: a flat amount per tournament, a % of venue fees collected
-  (fee x attendees) and a % of bracket fees collected (each event's rule bracket fee x entrants; events without a rule
-  count as $0). A series picks its venue in its terms (see above); a tournament can be held at a different venue, use
-  a custom cut, or have no venue. The venue cut is a separate payable per tournament (it does not change the prize pool), marked
-  paid on the tournament page, the venue's page or the venue payments ledger. Like player payouts, a paid amount (and
-  the venue it was paid to) is never changed by a re-sync or a venue edit; a changed calculation shows a `≠` marker.
-  Databases from before venues existed get one venue per distinct series venue name and cut on upgrade.
-- **Square** (optional, card taps at the venue): on a tournament page, "Pull payments from Square" fetches the
-  completed payments (net of refunds) taken that day, from midnight until 6am the next morning in your `TZ`, at the
-  venue's Square location if it has one set. They are compared with what attendees should have paid (venue fee + the
-  bracket fee of each event entered) so a count or total mismatch stands out. Link each payment to a player to see who
-  is unpaid, short or overpaid. Once you've linked a card to a player (by Square's card fingerprint), all its payments
-  are linked to them, at every tournament, past and future: a second payment the same night, or one where they didn't
-  enter, then shows them as overpaid. Payments you've linked or unlinked by hand are never changed, and a card you've
-  linked to more than one player (someone paying for a friend) isn't linked automatically any more. Auto-links are
-  tagged "auto". What matters most is that the total taken covers what was expected: mark a payment you can't or
-  needn't match to anyone **No player needed** and it still counts, without asking to be linked. Mark payments that
-  aren't tournament fees (e.g. a drink) **Not a fee** to leave them out. A payment is only ever counted for one
-  tournament. A tournament needs attention when less was taken than expected, a linked player paid too little, or
-  payments are neither linked nor marked. When a tournament is short and you'll make up the difference yourself,
-  press **I'll cover it** (with a note): it stops being flagged, unless more goes missing later.
-  When an entrant's fee was sorted out some other way (someone else paid for them, or it was waived), mark them
-  **Sorted out** in the "Who paid" table with a note saying how: they no longer count as unpaid or missing.
-- **What each payment was for**: with orders and items authorised, pulling payments also fetches each payment's order
-  (its line items) and, when it sells something new, the item library. On **Square items** (linked from each
-  tournament's Square section) give each item you sell a meaning, matched by its name (custom amounts share one):
-  venue fee, bracket fee or catch-up (a player paying for a week they missed; it counts toward the week it's paid
-  at) count toward the takings; "not a fee" (drinks, food) is
-  left out. Line items show under each payment. A payment split across both counts only its fee share, pro rata, and
-  one that was all drinks isn't counted or asked to be linked. Items without a meaning still count, as before.
-  A grant from before this (payments and payouts only) keeps working without line items: authorise again (the steps
-  under "Square: read-only access") to turn them on.
-- **Card fees**: each Square payment's processing fee (as Square reports it, tax adjustments included) is stored and
-  shown, with gross, fees and net per tournament and per series. Square adds the fee a little after the payment, so
-  a fresh payment shows "pending" until a later pull fills it in.
-- **Bank**: reconcile by balance. On the Bank page, enter the bank balance at the end of a day: it's compared with
-  what the app expects (the last reconciled balance, plus deposits, minus payouts to players and venues marked paid
-  since), and any difference is recorded with your note. The first reconciliation sets the opening balance. Deposits
-  are Square's payouts ("Import payouts from Square", or the automatic pull; uses the `PAYOUTS_READ` permission
-  granted during setup), each with Square's breakdown of the payments, refunds and fees it covered, plus any you add
-  by hand from the statement. Failed payouts don't count. Cash and other money through the account aren't tracked:
-  note them against the difference.
-- **Locking**: a reconciliation locks everything dated on or before its day: deposits, and payouts to players and
-  venues it took in (they can't be undone or edited), and every tournament up to then with no issues left (no
-  payments missing or to link, all events final). Tournaments with issues stay editable (payment links, ignores,
-  "sorted out") and lock as soon as they're clear. A locked tournament's settings, payouts and payment links can't
-  change and it isn't recomputed. Syncing from parry.gg and pulling from Square skip locked tournaments, so a long
-  series only re-reads what's still open. Undo the latest reconciliation, one at a time, to unlock (and re-import).
+## The run sheet
+
+The home page says what to do next. Every tournament sits in the first lane that applies to it:
+
+- **Waiting on parry.gg**: it hasn't happened yet, or its placements aren't final (complete on parry.gg, with a single
+  1st place), so payouts can't be worked out. Fix it on parry.gg and re-sync.
+- **Collect**: its takings need you: Square payments to link to players, or money missing that nobody named owes.
+- **Pay out**: a winner or the venue is still owed.
+- **Done**: nothing left, and it locks once a bank reconciliation takes it in.
+
+Players who still owe for a night don't hold it up: that's followed up under **Owed to us**. Tiles across the top show
+what players owe us, what we owe (against the bank), the bank's estimated balance with Square money still on its way,
+and anything filed as unexplained.
+
+## 1. Collect
+
+Each tournament page has three numbered steps: **Takings**, **Payouts** and **Summary**, with its settings (venue fee
+override, venue and cut, whether takings are tracked, exclude) in a Setup panel at the bottom.
+
+- **Pull payments from Square** fetches the completed payments (net of refunds) taken that day, from midnight until
+  6am the next morning in your `TZ`, at the venue's Square location if it has one. Set `SQUARE_AUTO_PULL_HOURS` (e.g.
+  `6`) to pull the last 14 days of every tracked series automatically, or pull a whole series from its page (one
+  Square query per location for the whole season).
+- **Link each payment to the player who made it.** Once a card is linked to a player (by Square's card fingerprint),
+  all its payments are linked to them, at every tournament; links made by hand are never changed, and a card linked to
+  more than one player isn't linked automatically any more. Mark a payment you can't or needn't match **No player
+  needed** (it still counts toward the night) and one that isn't a fee, like a drink, **Not a fee**.
+- **What each entrant owes** is the venue fee plus the bracket fee of each event they entered. What a player pays on a
+  night pays that night first, then the oldest week they still owe ("paid late": people pay for missed weeks with the
+  ordinary fee items), and anything left is **credit** for their next tournament. The "Who paid" table shows each
+  entrant's status: paid, paid late, paid by credit, sorted out, written off, owing, or not matched yet (when the
+  night has payments nobody's linked to, only the total matters).
+- **Settle** an entrant paid some other way: a bank transfer or cash, paid by another player, waived or written off.
+  When someone paid more than they owed and others that night still owe, **Paid for someone?** suggests who it was
+  probably for (exact amounts first, people they've paid for before first); confirming records it as paid by another
+  player. Money missing that nobody named owes can be **written off** with a reason.
+- **What each payment was for**: with orders and items authorised, each payment's line items show under it. Give each
+  item you sell a meaning under **Setup → Square items** (venue fee, bracket fee, catch-up, or not a fee) and
+  payments mixing fees and drinks count only their fee share. Items without a meaning still count.
+- **Card fees**: Square adds its fee a little after each payment, so a fresh one shows "pending" until a later pull.
+
+**Owed to us** lists everyone who still owes, the nights behind it and how old each debt is (0–7, 8–30, 31–90, 90+
+days). Record a bank transfer or cash (it pays their oldest nights first, anything over is credit) or write it off
+with a reason. Credit is kept for the player's next tournament unless you mark it kept as income or refunded.
+
+## 2. Pay out
+
+- **Pool** = fixed pool + bracket-fee share + venue-fee share, per the game's rule. Ties share the combined amount of
+  the places they occupy. Money is integer cents; splits are exact to the cent.
+- **The venue's cut** is a separate payable per tournament: a flat amount, a % of venue fees collected (fee x
+  attendees) and a % of bracket fees collected (each event's bracket fee x entrants), added together. A tournament
+  can be held at a different venue, use a custom cut, or have no venue.
+- **To pay** groups everything owed by recipient, so each player and venue is one bank transfer, next to the estimated
+  bank balance and what's left after paying everyone. Send it from the bank, then mark it **Paid** with the day it
+  left: the bank then expects it gone on that day. The tournament's Payouts step pays one line at a time. The **Paid**
+  tab lists what's been paid, filtered by player, venue, series or game, with undo until reconciled.
+- Re-syncing never changes an amount already marked paid: a changed result shows a `≠` marker instead.
+
+## 3. Reconcile
+
+The **Bank** page is three steps:
+
+1. Enter the balance from the bank app at the end of a day.
+2. Compare it with what the app expects: the last reconciled balance, plus money in (Square's payouts, deposits added
+   by hand, players' bank transfers), minus money out (payouts to players and venues, on the day they were sent).
+3. Explain any difference, then lock. Each explanation has a category (cash deposited, bank fee, interest, your own
+   money in or out, a refund to a player, other income or expense); "a player paid by bank transfer" records it as
+   their payment against what they owe. Once it matches, lock the day. **Lock anyway** files what's left as
+   *unexplained*, with a reason; it stays visible, and can be explained properly later.
+
+The first reconciliation sets the opening balance. Deposits are Square's payouts (**Import payouts from Square**, or
+the automatic pull; uses the `PAYOUTS_READ` permission), each with Square's breakdown of the payments, refunds and
+fees it covered, plus any you add by hand. Failed payouts don't count.
+
+**Locking**: a reconciliation locks everything dated on or before its day: deposits, transfers, explanations, payouts
+to players and venues, and every tournament up to then with nothing left to collect (no payments to link, no money
+missing, all events final). A locked tournament's settings, payouts and payment links can't change and it isn't
+re-imported, though players can still pay what they owe for it. Undo the latest reconciliation, one at a time, to
+unlock.
+
+**History** (under Records) is the audit log of every money action, with when it happened and the address it came
+from; tournament and player pages show their own.
+
+## Records
+
+- **Series**: parry.gg has no series object, so a series is either a *custom slug* (the quick link shared by every
+  tournament in the series, e.g. `fridaybrawl`, matched exactly) or, as a fallback, a *match pattern* (e.g. `Friday
+  Night Brawl`) matched, ignoring case and punctuation, against each tournament's name and URL slug. Individual
+  tournaments can also be added by link or excluded. Each series has a three-letter code (e.g. `FNB`) used in links
+  (`/series/FNB`) and tables. Its page has tabs: Tournaments (with their stage), Terms & rules, Money and Settings.
+- **Rules** (per game, with optional single-event override): bracket fee, number of places paid, fixed pool, % of
+  bracket fees into the pool, % of venue fees into the pool, and a split % per place (e.g. `50,30,20`).
+- **Terms over time**: a series' venue, venue fee and game rules are dated. When something changes (e.g. a new
+  venue), start new terms from that date: the rules in effect then are copied, and each tournament uses the terms in
+  effect on its date, so earlier ones keep their old venue, fee and rules.
+- **Players**: what we owe them and what they owe us, night by night, their credit, placings and prizes, Square
+  payments, and history. Someone imported under two parry.gg accounts can be merged from either player's page (the
+  Players page suggests tags that differ only in case or punctuation), and unmerged again.
+- **Venues**: each venue's series, tournaments held there, and what it's owed and been paid.
+- **Events**: every event, filtered by series, game or unfinalised placements; one game's events also show its payout
+  rules, winners and players.
+
+## Setup
+
+The **Setup** page shows the parry.gg and Square connections, each series' syncing, the Square item meanings, and the
+weekly reminder.
+
 - **Weekly reminder** (optional): set `SMTP_HOST` (plus `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD` or
-  `SMTP_PASSWORD_FILE`, `SMTP_FROM`) and `REMINDER_TO` (comma-separated) to get an email once a week, at
-  `REMINDER_HOUR` (default 9) on `REMINDER_DAY` (default `mon`) in your `TZ`, reminding you to process payments: when
-  the bank was last reconciled and what's moved since, tournaments with Square payments missing or to link, events to
-  finalise, and what's owed. Set `POT_URL` to have it link to the pages. Port 587 needs STARTTLS (465 is TLS from the
-  start). `python -m app.mail preview` prints this week's email; `python -m app.mail test` sends it now. A reminder
-  missed by more than a day (the app was down) is skipped, not sent late.
-- **Pulling a whole series**: "Pull Square payments (all tournaments)" on the series page pulls every tournament in the
-  background with a single Square query per location (spanning all their dates, then filing each payment under the
-  night it belongs to), so a season costs a few requests rather than one per night. Set `SQUARE_AUTO_PULL_HOURS`
-  (e.g. `6`) to do this automatically for the last 14 days of every tracked series; leave it blank to turn it off.
-  Only one Square pull runs at a time, and the series page shows the last result.
-- Payouts are only calculated for events whose placements are **finalised** (complete on parry.gg, with a single 1st
-  place). Others are flagged on the dashboard, series, tournament and event pages until fixed on parry.gg and re-synced.
-- **UI**: server-rendered, table-first, with every player, event, tournament, series and game linking to its page, plus
-  events, games, players and payouts-ledger indexes. A few lines of vanilla JS (`app/static/table.js`) add click-to-sort
-  and filter boxes; every page works without it.
+  `SMTP_PASSWORD_FILE`, `SMTP_FROM`) and `REMINDER_TO` (comma-separated) to get the run sheet by email once a week, at
+  `REMINDER_HOUR` (default 9) on `REMINDER_DAY` (default `mon`) in your `TZ`: tournaments to collect, who owes us,
+  what to pay against the bank, and when it was last reconciled. Set `POT_URL` to have it link to the pages. Port 587
+  needs STARTTLS (465 is TLS from the start). `python -m app.mail preview` prints this week's email; `python -m
+  app.mail test` sends it now. A reminder missed by more than a day (the app was down) is skipped, not sent late.
+- **UI**: server-rendered, with its own look (self-hosted Barlow fonts, a dark scoreboard style, a print stylesheet
+  on white). Every status is a word, not just a colour. A few lines of vanilla JS (`app/static/table.js`) add
+  click-to-sort and filter boxes; every page works without it. `/setup/styleguide` shows every component.
+- **Upgrading** from before the ledger moves earlier decisions in once: entrants sorted out by hand become
+  settlements, and covered shortfalls become write-offs ("Organiser covered"). `python -m app.ledger report` lists
+  what was moved, and `python -m app.ledger check` checks the books balance.
 
 ## Run
 
@@ -198,8 +228,8 @@ scripts/test-deploy.sh down                                # stop (reset also de
 
 `load` prints player and venue owed/paid totals, Square takings, deposits and the last reconciled bank balance before
 and after the upgrade and fails if they differ, so a schema migration that would reprice anything shows up before it
-reaches production. Once the ledger exists (`app/ledger.py`), it also checks the books balance and lists each tournament
-whose amount owing changed, and why. `snapshot` uses SQLite's online backup
+reaches production. It also checks the books balance (`python -m app.ledger check`) and lists what the upgrade moved
+into the ledger, and why (`python -m app.ledger report`). `snapshot` uses SQLite's online backup
 into the production container's `/tmp`, so the live `/data` is never written to. Set `POT_CONTAINER` if the container
 isn't found automatically, and `POT_DOCKER="sudo docker"` if the server needs it. Snapshots hold real payment records:
 they stay in `data/snapshots/` (git- and docker-ignored, readable only by you). Anything you do in the test copy, like marking payouts paid,

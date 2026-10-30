@@ -55,11 +55,12 @@ you've paid them and what you still owe. For your LAN, behind one shared passwor
   When an entrant's fee was sorted out some other way (someone else paid for them, or it was waived), mark them
   **Sorted out** in the "Who paid" table with a note saying how: they no longer count as unpaid or missing.
 - **What each payment was for**: with orders and items authorised, pulling payments also fetches each payment's order
-  (its line items) and, when it sells something new, the item library. On **Square categories** (linked from each
-  tournament's Square section) give each category a meaning: venue fee, bracket fee or catch-up (a player paying for
-  a week they missed; it counts toward the week it's paid at) count toward the takings; "not a fee" (drinks, food) is
+  (its line items) and, when it sells something new, the item library. On **Square items** (linked from each
+  tournament's Square section) give each item you sell a meaning, matched by its name (custom amounts share one):
+  venue fee, bracket fee or catch-up (a player paying for a week they missed; it counts toward the week it's paid
+  at) count toward the takings; "not a fee" (drinks, food) is
   left out. Line items show under each payment. A payment split across both counts only its fee share, pro rata, and
-  one that was all drinks isn't counted or asked to be linked. Categories without a meaning still count, as before.
+  one that was all drinks isn't counted or asked to be linked. Items without a meaning still count, as before.
   A grant from before this (payments and payouts only) keeps working without line items: authorise again (the steps
   under "Square: read-only access") to turn them on.
 - **Card fees**: each Square payment's processing fee (as Square reports it, tax adjustments included) is stored and

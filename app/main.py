@@ -850,22 +850,27 @@ def tournament_page(request: Request, tournament_id: str):
                   venues=venues, recon=recon, square_setup=square_setup(), meanings=square.MEANINGS)
 
 
-@app.get("/square/categories")
-def square_categories(request: Request):
+@app.get("/square/items")
+def square_items(request: Request):
     with db.session() as conn:
-        categories = square.category_meanings(conn)
-    return render(request, "square_categories.html", categories=categories, meanings=square.MEANINGS)
+        items = square.item_meanings(conn)
+    return render(request, "square_items.html", items=items, meanings=square.MEANINGS)
 
 
-@app.post("/square/categories")
-def save_square_category(category_id: str = Form(...), meaning: str = Form("")):
+@app.get("/square/categories", include_in_schema=False)
+def square_categories():  # meanings were per category before #33
+    return RedirectResponse("/square/items", status_code=303)
+
+
+@app.post("/square/items")
+def save_square_item(key: str = Form(...), meaning: str = Form(""), name: str = Form("")):
     try:
         with db.session() as conn:
-            square.set_meaning(conn, category_id, meaning or None)
+            square.set_meaning(conn, key, meaning or None, name)
             square.lock_clear_tournaments(conn)
     except RuleError as e:
-        return back("/square/categories", str(e))
-    return back("/square/categories")
+        return back("/square/items", str(e))
+    return back("/square/items")
 
 
 @app.get("/events")

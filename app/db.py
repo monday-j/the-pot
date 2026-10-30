@@ -208,8 +208,14 @@ CREATE TABLE IF NOT EXISTS square_variation (
     item_name TEXT NOT NULL DEFAULT '',
     category_id TEXT NOT NULL DEFAULT ''
 );
--- What each Square category means for the takings (#31): 'venue', 'bracket', 'catchup' (all count) or 'other' (not a
--- fee: left out); NULL until chosen. Lines with no category are filed under '(none)', custom amounts under '(custom)'.
+-- What each item sold means for the takings (#33): 'venue', 'bracket', 'catchup' (all count) or 'other' (not a fee:
+-- left out); NULL until chosen. Keyed by the line item's name, lower-cased and trimmed; custom amounts by '(custom)'.
+CREATE TABLE IF NOT EXISTS square_item (
+    key TEXT PRIMARY KEY,
+    name TEXT NOT NULL DEFAULT '',
+    meaning TEXT
+);
+-- Square categories, shown for reference. meaning is legacy (#31: meanings were per category until #33), no longer read.
 CREATE TABLE IF NOT EXISTS square_category (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL DEFAULT '',

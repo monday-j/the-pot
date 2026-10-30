@@ -174,25 +174,30 @@ def refresh_catalog(conn, client):
                          (vid, item.name, item.category_id))
 
 
+def item_key(line) -> str:
+    """What a line item's meaning is filed under (#33): its name, ignoring case and spaces; custom amounts share one."""
+    if line["item_type"] == "CUSTOM_AMOUNT" or not line["catalog_object_id"]:
+        return CUSTOM_AMOUNT
+    return " ".join((line["name"] or "").split()).lower() or NO_CATEGORY
+
+
 def order_lines(conn, order_ids) -> dict:
-    """Line items by order id, each with its category (id, name) and that category's meaning (None: not chosen)."""
+    """Line items by order id, each with its Square category name (for reference) and its item's meaning (None: not
+    chosen yet)."""
     ids = sorted({o for o in order_ids if o})
     if not ids:
         return {}
     out = {}
     for r in conn.execute(
-            f"""SELECT l.*, CASE WHEN l.item_type='CUSTOM_AMOUNT' OR l.catalog_object_id='' THEN '{CUSTOM_AMOUNT}'
-                                 ELSE COALESCE(NULLIF(v.category_id, ''), '{NO_CATEGORY}') END AS category_id
-                FROM square_order_line l LEFT JOIN square_variation v ON v.id=l.catalog_object_id
+            f"""SELECT l.*, COALESCE(c.name, '') AS category FROM square_order_line l
+                LEFT JOIN square_variation v ON v.id=l.catalog_object_id LEFT JOIN square_category c ON c.id=v.category_id
                 WHERE l.order_id IN ({",".join("?" * len(ids))}) ORDER BY l.order_id, l.uid""", ids):
         out.setdefault(r["order_id"], []).append(dict(r))
-    cats = {r["id"]: r for r in conn.execute("SELECT * FROM square_category")}
+    meanings = {r["key"]: r["meaning"] for r in conn.execute("SELECT key, meaning FROM square_item")}
     for lines in out.values():
         for line in lines:
-            cat = cats.get(line["category_id"])
-            line["category"] = (cat["name"] if cat else "") or {NO_CATEGORY: "No category",
-                                                                CUSTOM_AMOUNT: "Custom amount"}.get(line["category_id"], "?")
-            line["meaning"] = cat["meaning"] if cat else None
+            line["item_key"] = item_key(line)
+            line["meaning"] = meanings.get(line["item_key"])
     return out
 
 
@@ -211,25 +216,30 @@ def _split(amount: int, lines: list) -> dict:
     return out
 
 
-def category_meanings(conn) -> list[dict]:
-    """Every category the pulled orders' lines fall under, with how much was sold under it and its meaning."""
+def item_meanings(conn) -> list[dict]:
+    """Every item the pulled orders sold, with its category, variations, how much was sold and its meaning (#33)."""
     lines = order_lines(conn, [r[0] for r in conn.execute("SELECT DISTINCT order_id FROM square_order_line")])
     seen = {}
     for line in (l for ls in lines.values() for l in ls):
-        c = seen.setdefault(line["category_id"], {"id": line["category_id"], "name": line["category"],
-                                                  "meaning": line["meaning"], "lines": 0, "cents": 0, "examples": set()})
-        c["lines"] += 1
-        c["cents"] += line["total_cents"]
-        c["examples"].add(line["name"] or line["note"] or "?")
-    return sorted(({**c, "examples": sorted(c["examples"])[:6]} for c in seen.values()),
-                  key=lambda c: (c["meaning"] is not None, c["name"].lower()))
+        key = line["item_key"]
+        i = seen.setdefault(key, {"key": key, "name": "Custom amount" if key == CUSTOM_AMOUNT else line["name"] or "?",
+                                  "meaning": line["meaning"], "lines": 0, "cents": 0, "categories": set(),
+                                  "variations": set()})
+        i["lines"] += 1
+        i["cents"] += line["total_cents"]
+        if line["category"]:
+            i["categories"].add(line["category"])
+        if line["variation_name"]:
+            i["variations"].add(line["variation_name"])
+    return sorted(({**i, "categories": sorted(i["categories"]), "variations": sorted(i["variations"])[:6]}
+                   for i in seen.values()), key=lambda i: (i["meaning"] is not None, i["name"].lower()))
 
 
-def set_meaning(conn, category_id: str, meaning: str | None):
+def set_meaning(conn, key: str, meaning: str | None, name: str = ""):
     if meaning is not None and meaning not in MEANINGS:
         raise RuleError("Unknown meaning")
-    conn.execute("""INSERT INTO square_category (id, name, meaning) VALUES (?, '', ?)
-                    ON CONFLICT(id) DO UPDATE SET meaning=excluded.meaning""", (category_id, meaning))
+    conn.execute("""INSERT INTO square_item (key, name, meaning) VALUES (?,?,?)
+                    ON CONFLICT(key) DO UPDATE SET meaning=excluded.meaning""", (key, name, meaning))
 
 
 def pull_tournament(conn, client: SquareClient, tournament_id: str) -> dict:
@@ -424,7 +434,7 @@ def reconcile(conn, tournament_id: str) -> dict:
     sold = sum(p["amount_cents"] for p in takings if p["amount_cents"] > 0)
     return {"payments": payments, "players": players, "expected": expected_total, "taken": taken,
             "fees": fees, "net": sold - fees, "banked": banked, "sold": sold, "by_meaning": by_meaning,
-            "unmapped": len({l["category_id"] for p in payments for l in p["lines"] if l["meaning"] is None}), "fees_pending": sum(1 for p in counted if p["fee_cents"] is None),
+            "unmapped": len({l["item_key"] for p in payments for l in p["lines"] if l["meaning"] is None}), "fees_pending": sum(1 for p in counted if p["fee_cents"] is None),
             "difference": taken - expected_total, "attendees": len(expected), "count": len(counted),
             "unlinked": len(to_link), "unlinked_cents": sum(p["amount_cents"] for p in to_link),
             "no_player": len(unlinked) - len(to_link),

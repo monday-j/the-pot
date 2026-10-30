@@ -116,20 +116,28 @@ def test_without_the_grant_payments_are_pulled_as_before(fnb):  # noqa: F811
     assert r["new"] == 1 and "orders" not in r and sq.calls == [sq.calls[0]]  # only the payments query
 
 
-def test_only_fee_lines_count_once_their_categories_have_a_meaning(night):
+def test_only_fee_lines_count_once_their_items_have_a_meaning(night):
     conn, _, _ = night
     r = square.reconcile(conn, "t1")  # no meanings yet: everything counts, as before
-    assert (r["taken"], r["unmapped"], r["by_meaning"]) == (4500, 3, {None: 3500})
-    square.set_meaning(conn, "C-entry", "venue")
-    square.set_meaning(conn, "C-bar", "other")
+    assert (r["taken"], r["unmapped"], r["by_meaning"]) == (4500, 4, {None: 3500})
+    # by item name, not category: "Venue fee" and "Bracket" are both in "Entry" (#33)
+    square.set_meaning(conn, "venue fee", "venue")
+    square.set_meaning(conn, "bracket", "bracket")
+    square.set_meaning(conn, "coke", "other")
     square.set_meaning(conn, "(custom)", "catchup")  # Cat paying for last week
     r = square.reconcile(conn, "t1")
     assert (r["taken"], r["unmapped"]) == (4000, 0)  # the Coke is left out
-    assert r["by_meaning"] == {"venue": 2000, "other": 500, "catchup": 1000}
+    assert r["by_meaning"] == {"venue": 1000, "bracket": 1000, "other": 500, "catchup": 1000}
     assert {p["id"]: p["state"] for p in r["players"]} == {"u1": "ok", "u2": "ok", "u3": "ok", "u4": "ok"}
     assert r["sold"] == 4500 and r["net"] == 4500  # card fees and banking still cover the whole payment
     with pytest.raises(RuleError):
-        square.set_meaning(conn, "C-bar", "beer")
+        square.set_meaning(conn, "coke", "beer")
+
+
+def test_items_are_matched_by_name_ignoring_case_and_spaces():
+    line = {"item_type": "ITEM", "catalog_object_id": "V1", "name": "  Monthly   Entry "}
+    assert square.item_key(line) == "monthly entry"
+    assert square.item_key({**line, "item_type": "CUSTOM_AMOUNT"}) == square.item_key({**line, "catalog_object_id": ""})
 
 
 def test_a_payment_that_was_all_drinks_is_not_counted_or_asked_to_be_linked(night):
@@ -137,7 +145,7 @@ def test_a_payment_that_was_all_drinks_is_not_counted_or_asked_to_be_linked(nigh
     sq.payments.append(replace(pay("P5", 500, "fp-e", "2026-01-01T09:30:00Z"), order_id="O5"))
     sq.orders["O5"] = [line("a", "Coke", 500, "V-coke")]
     square.pull_tournament(conn, sq, "t1")
-    square.set_meaning(conn, "C-bar", "other")
+    square.set_meaning(conn, "coke", "other")
     r = square.reconcile(conn, "t1")
     assert (r["taken"], r["unlinked"], r["count"]) == (4000, 0, 4)  # P5 is neither counted nor to link
 
@@ -149,16 +157,17 @@ def test_a_partly_refunded_or_split_payment_shares_its_lines_pro_rata():
     assert square._split(1000, []) == {}
 
 
-def test_categories_page(client, monkeypatch):  # noqa: F811
-    from app import db, main
-    assert "No line items pulled yet" in client.get("/square/categories").text
+def test_items_page(client, monkeypatch):  # noqa: F811
+    from app import db
+    assert "No line items pulled yet" in client.get("/square/categories").text  # the old address redirects
     with db.session() as c:
-        c.execute("INSERT INTO square_order_line (order_id, uid, name, catalog_object_id, total_cents) VALUES "
-                  "('O1', 'a', 'Coke', 'V-coke', 500)")
+        c.execute("INSERT INTO square_order_line (order_id, uid, name, variation_name, catalog_object_id, total_cents) "
+                  "VALUES ('O1', 'a', 'Coke', 'Can', 'V-coke', 500), ('O1', 'b', 'Venue Fee', '', 'V-venue', 1000)")
         c.execute("INSERT INTO square_variation (id, item_name, category_id) VALUES ('V-coke', 'Coke', 'C-bar')")
         c.execute("INSERT INTO square_category (id, name) VALUES ('C-bar', 'Bar')")
-    page = client.get("/square/categories").text
-    assert "1 category still needs a meaning" in page and "Bar" in page and "Coke" in page
-    page = client.post("/square/categories", data={"category_id": "C-bar", "meaning": "other"}).text
+    page = client.get("/square/items").text
+    assert "2 items still need a meaning" in page and "Bar" in page and "Can" in page and "Venue Fee" in page
+    client.post("/square/items", data={"key": "coke", "name": "Coke", "meaning": "other"})
+    page = client.post("/square/items", data={"key": "venue fee", "name": "Venue Fee", "meaning": "venue"}).text
     assert "still need" not in page and '<option value="other" selected>' in page
-    assert "Unknown meaning" in client.post("/square/categories", data={"category_id": "C-bar", "meaning": "x"}).text
+    assert "Unknown meaning" in client.post("/square/items", data={"key": "coke", "meaning": "x"}).text

@@ -1,0 +1,11 @@
+{% extends "base.html" %}{% import "_macros.html" as m %}
+{% block body %}
+<h1>Square items</h1>
+<p class="help">What each item you sell through Square means for a tournament's takings, matched by its name. Payments are split by the line items of the order rung up for them: venue fees, bracket fees and catch-ups (a player paying for a week they missed: it counts toward the week it was paid at) count toward the takings; anything that's not a fee, like drinks or food, is left out. Items without a meaning yet still count, as they did before.</p>
+{% set unset = items|selectattr("meaning", "none")|list %}{% if unset %}<div class="strip">{{ unset|length }} item{{ "s" if unset|length != 1 }} still need{{ "s" if unset|length == 1 }} a meaning.</div>{% endif %}
+<table class="sortable"><thead><tr><th>Item</th><th>Square category</th><th>Variations</th><th class="r">Lines</th><th class="r">Total</th><th>Means</th></tr></thead><tbody>
+{% for i in items %}<tr><td>{{ i.name }}</td><td class="mut">{{ i.categories|join(", ") or "·" }}</td><td class="mut">{{ i.variations|join(", ") or "·" }}</td><td class="r">{{ i.lines }}</td>{{ m.mtd(i.cents) }}
+<td><form class="inline" method="post" action="/square/items"><input type="hidden" name="key" value="{{ i.key }}"><input type="hidden" name="name" value="{{ i.name }}"><select name="meaning" data-autosubmit>
+<option value="" {{ "selected" if i.meaning is none }}>(choose)</option>{% for key, label in meanings.items() %}<option value="{{ key }}" {{ "selected" if i.meaning == key }}>{{ label }}</option>{% endfor %}</select><noscript><button class="sec">Save</button></noscript></form></td></tr>
+{% else %}<tr><td colspan="6" class="mut">No line items pulled yet. They come with Square payments once the app is authorised to read orders and the item library (see the README).</td></tr>{% endfor %}</tbody></table>
+{% endblock %}

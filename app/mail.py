@@ -1,4 +1,4 @@
-"""A weekly email reminding you to process payments (#26), with what's waiting.
+"""A weekly email of the run sheet (#26, #47): what to collect, who owes us, what to pay, and the bank.
 
     python -m app.mail preview   print this week's reminder
     python -m app.mail test      send it now (whether or not it's due)
@@ -16,7 +16,7 @@ from datetime import date, datetime, timedelta
 from email.message import EmailMessage
 from zoneinfo import ZoneInfo
 
-from . import bank, config, db, square, sync
+from . import bank, config, db, runsheet
 
 CHECK_SECONDS = 600  # how often the loop checks whether the reminder is due
 FIRST_DELAY = 90  # seconds after startup before the first check
@@ -41,41 +41,74 @@ def due(now: datetime, last_sent: datetime | None, weekday: int, hour: int) -> b
 
 
 def summary(conn, today: str | None = None) -> tuple[str, str]:
-    """(subject, body) of the reminder: what's waiting to be processed."""
+    """(subject, body) of the reminder, following the run sheet (#47): tournaments to collect, what players owe us,
+    what we owe against the bank, and the bank itself."""
     today = today or bank.today()
     url = config.site_url()
     link = lambda path: f" {url}{path}" if url else ""
+    plural = lambda n, word: f"{n} {word}{'s' if n != 1 else ''}"
+    lanes = runsheet.stages(conn)
+    owed = runsheet.owed_to_us(conn)
+    topay = runsheet.to_pay(conn)
+    b = runsheet.bank_summary(conn)
     lines = []
-    last = bank.latest(conn)
-    moved = bank.movements(conn)
-    if last:
-        days = (date.fromisoformat(today) - date.fromisoformat(last["reconciled_on"])).days
-        lines.append(f"Bank: last reconciled {last['reconciled_on']} ({days} day{'s' if days != 1 else ''} ago).")
+
+    collect = lanes["collect"]
+    lines.append(f"Collect: {plural(len(collect), 'tournament')} with takings to sort out.{link('/')}")
+    for t in collect[:10]:
+        x = t["takings"]
+        what = ", ".join(w for w in (f"{plural(x['unlinked'], 'payment')} to link" if x["unlinked"] else "",
+                                     f"{money(x['gap'])} missing" if x["gap"] else "") if w)
+        lines.append(f"  - {t['name']}: {what}{link('/tournaments/' + t['id'] + '#takings')}")
+    if len(collect) > 10:
+        lines.append(f"  ... and {len(collect) - 10} more{link('/')}")
+    waiting = [t for t in lanes["waiting"] if t["not_final"]]
+    if waiting:
+        lines.append(f"Waiting on parry.gg: {plural(len(waiting), 'tournament')} with placements to finalise.")
+
+    lines.append("")
+    if owed["players"]:
+        lines.append(f"Owed to us: {money(owed['cents'])} by {plural(len(owed['players']), 'player')}, the oldest "
+                     f"{plural(owed['oldest_days'], 'day')} ago.{link('/owed')}")
+        for p in owed["players"][:5]:
+            lines.append(f"  - {p['name']}: {money(p['cents'])} for {plural(len(p['nights']), 'night')}")
+        if len(owed["players"]) > 5:
+            lines.append(f"  ... and {len(owed['players']) - 5} more")
     else:
-        lines.append("Bank: never reconciled. The first reconciliation sets the opening balance.")
-    lines.append(f"  Not reconciled yet: {money(moved['in'])} in ({len(moved['deposits'])} deposits), "
-                 f"{money(moved['out'])} out ({len(moved['players']) + len(moved['venues'])} payments).{link('/bank')}")
-    issues = square.takings_issues(conn)
-    gaps = [i for i in issues if i["kind"] == "gap"]
-    to_link = [i for i in issues if i["kind"] == "link"]
+        lines.append("Owed to us: nothing.")
+
     lines.append("")
-    lines.append(f"Square payments: {len(to_link)} tournament{'s' if len(to_link) != 1 else ''} with payments to link, "
-                 f"{len(gaps)} with money missing that nobody named owes.")
-    for i in issues[:10]:
-        what = (f"{money(i['gap'])} missing" if i["kind"] == "gap"
-                else f"{i['unlinked']} payment{'s' if i['unlinked'] != 1 else ''} to link")
-        lines.append(f"  - {i['tournament_name']}: {what}{link('/tournaments/' + i['tournament_id'] + '#square')}")
-    if len(issues) > 10:
-        lines.append(f"  ... and {len(issues) - 10} more{link('/')}")
-    events = sync.event_issues(conn)
-    if events:
-        lines.append(f"Events with placements to finalise on parry.gg: {len(events)}.")
-    owed = conn.execute("SELECT COALESCE(SUM(amount_cents),0), COUNT(*) FROM payout WHERE status='owed'").fetchone()
-    venue = conn.execute("SELECT COALESCE(SUM(amount_cents),0), COUNT(*) FROM venue_payment WHERE status='owed'").fetchone()
+    if topay["recipients"]:
+        against = ""
+        if b["estimate"] is not None:
+            left = b["estimate"] - topay["cents"]
+            against = (f" The bank should have {money(b['estimate'])}, "
+                       + (f"{money(left)} left after paying." if left >= 0 else f"{money(-left)} short."))
+        lines.append(f"To pay: {money(topay['cents'])} in {plural(len(topay['recipients']), 'transfer')}."
+                     f"{against}{link('/to-pay')}")
+        for r in topay["recipients"][:5]:
+            lines.append(f"  - {r['name']}{' (venue)' if r['venue'] else ''}: {money(r['owed'])}")
+        if len(topay["recipients"]) > 5:
+            lines.append(f"  ... and {len(topay['recipients']) - 5} more")
+    else:
+        lines.append("To pay: nothing.")
+
     lines.append("")
-    lines.append(f"Owed: {money(owed[0])} to players ({owed[1]} payouts), {money(venue[0])} to venues.{link('/')}")
-    need = f" ({len(issues)} tournament{'s need' if len(issues) != 1 else ' needs'} attention)" if issues else ""
-    subject = "The Pot: time to process payments" + need
+    if b["last"]:
+        days = (date.fromisoformat(today) - date.fromisoformat(b["last"]["reconciled_on"])).days
+        lines.append(f"Bank: last reconciled {b['last']['reconciled_on']} ({plural(days, 'day')} ago).{link('/bank')}")
+    else:
+        lines.append(f"Bank: never reconciled. The first reconciliation sets the opening balance.{link('/bank')}")
+    if b["in_transit"]:
+        lines.append(f"  {money(b['in_transit'])} from Square still on its way.")
+    if b["unexplained"]:
+        lines.append(f"  {money(b['unexplained'])} filed as unexplained: explain it on the Bank page.")
+
+    todo = [plural(len(collect), "tournament") + " to collect" if collect else "",
+            plural(len(topay["recipients"]), "payment") + " to make" if topay["recipients"] else "",
+            plural(len(owed["players"]), "player") + " owing" if owed["players"] else ""]
+    todo = [t for t in todo if t]
+    subject = "The Pot: " + (", ".join(todo) if todo else "nothing waiting")
     return subject, "\n".join(lines) + "\n"
 
 

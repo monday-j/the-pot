@@ -41,16 +41,23 @@ def test_reminder_settings(monkeypatch):
 def test_summary_lists_what_is_waiting(fnb, monkeypatch):  # noqa: F811
     monkeypatch.setenv("POT_URL", "http://pot.lan:8000/")
     subject, body = mail.summary(fnb, "2026-01-20")
-    assert subject == "The Pot: time to process payments" and "never reconciled" in body
+    assert subject == "The Pot: 5 payments to make" and "never reconciled" in body
+    assert "Collect: 0 tournaments" in body and "Owed to us: nothing." in body
     square.pull_tournament(fnb, FakeSquare([pay("P1", 1000, "fp-a")]), "t1")
     fnb.execute("INSERT INTO bank_deposit (deposited_on, amount_cents) VALUES ('2026-01-02', 2500)")
     fnb.execute("""INSERT INTO reconciliation (reconciled_on, balance_cents, expected_cents, created_at)
-                   VALUES ('2026-01-06', 0, 0, '')""")
+                   VALUES ('2026-01-01', 0, 0, '')""")
     subject, body = mail.summary(fnb, "2026-01-20")
-    assert subject.endswith("(1 tournament needs attention)")
-    assert "last reconciled 2026-01-06 (14 days ago)" in body and "$25.00 in (1 deposits)" in body
-    assert "Friday Night Brawl #90: 1 payment to link http://pot.lan:8000/tournaments/t1#square" in body
-    assert "to players" in body
+    assert subject == "The Pot: 1 tournament to collect, 5 payments to make"
+    assert "  - Friday Night Brawl #90: 1 payment to link" in body
+    assert "http://pot.lan:8000/tournaments/t1#takings" in body
+    assert "last reconciled 2026-01-01 (19 days ago). http://pot.lan:8000/bank" in body
+    assert "To pay: " in body and "The bank should have $25.00" in body and "http://pot.lan:8000/to-pay" in body
+
+    square.link_payment(fnb, "P1", "u1")  # Alice paid; Bob, Cat and Dan owe $10 each
+    subject, body = mail.summary(fnb, "2026-01-20")
+    assert "3 players owing" in subject and "Owed to us: $30.00 by 3 players" in body
+    assert "  - Bob: $10.00 for 1 night" in body
 
 
 class FakeSMTP:

@@ -25,6 +25,14 @@
 {% if recon.written_off %}<span class="mut">{{ recon.written_off|money }} written off.</span>{% endif %}
 {% if recon.gap %}<span class="bad">{{ recon.gap|money }} missing that nobody named owes.</span><label>Why it's written off<input name="reason" size="24" placeholder="e.g. covered from my pocket" required></label><button class="sec" title="Write it off: link payments to players instead if you can">Write it off</button>{% endif %}</form>{% endif %}
 
+{% if suggestions %}<div class="suggest"><h3>Paid for someone? <span class="n">· suggestions</span></h3>
+{% for g in suggestions|groupby("payer_tag") %}{% set first = g.list[0] %}<p><b>{{ m.player(first.payer, first.payer_tag) }}</b> paid {{ first.extra|money }} more than they owed, now held as credit. It may have been for:</p>
+<ul>{% for s in g.list %}<li><form class="inline" method="post" action="/tournaments/{{ t.id }}/paid-for"><input type="hidden" name="paid_by" value="{{ s.payer }}">
+{% for p in s.players %}<input type="hidden" name="player_id" value="{{ p.id }}">{{ m.player(p.id, p.tag) }} ({{ p.balance|money }}{% if p.before %}, paid for before{% endif %}){{ " and " if loop.revindex == 2 else ", " if not loop.last }}{% endfor %}
+{% if not s.exact %}<span class="mut">: {{ s.total|money }} of the {{ s.extra|money }}</span>{% endif %}
+<button class="sec">Yes, {{ s.payer_tag }} paid</button></form></li>{% endfor %}</ul>
+{% endfor %}<p class="help">Only a suggestion: nothing changes until you confirm. Confirming records each as paid by another player, so the debt comes out of the payer's extra and their credit goes down.</p></div>{% endif %}
+
 <h3 id="paid">Who paid <span class="n">· {{ recon.players|length }}</span></h3>
 <div class="tw"><table class="sortable"><thead><tr><th>Player</th><th class="r">Owed</th><th class="r">Paid tonight</th><th class="r">Left</th><th>Status</th><th></th></tr></thead><tbody>
 {% for r in recon.players %}<tr><td>{{ m.player(r.id, r.tag) }}</td>

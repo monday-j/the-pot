@@ -2,6 +2,7 @@
 import logging
 import threading
 from datetime import date, datetime, time, timedelta, timezone
+from itertools import combinations
 from zoneinfo import ZoneInfo
 
 from . import bank, config, db, ledger, sync
@@ -465,6 +466,45 @@ def reconcile(conn, tournament_id: str, books: dict | None = None) -> dict:
             "owing_cents": sum(r["balance"] for r in players if r["state"] == "owing"),
             "unmatched": sum(1 for r in players if r["state"] == "unmatched"),
             "refunded": len(refunded), "refunded_fees": sum(p["fee_cents"] or 0 for p in refunded)}
+
+
+def suggestions(conn, tournament_id: str, recon: dict) -> list[dict]:
+    """Who a player's extra money on the night was probably for (#51). A player whose payments that night came to more
+    than they owed has the rest as credit; when other entrants that night still owe, suggest which of them it paid
+    for: combinations of up to three whose balances add up to the extra exactly, or failing that, the closest under
+    it. Pairs where the payer has paid for that player before come first. Only ever a suggestion: confirming records
+    each as paid by another player (ledger.settle)."""
+    extra = {}
+    for p in recon["payments"]:
+        if p["pid"]:
+            extra[p["pid"]] = extra.get(p["pid"], 0) + sum(a["cents"] for a in p["elsewhere"] if a["kind"] == "credit")
+    debtors = [r for r in recon["players"] if r["state"] in ("owing", "unmatched") and r["balance"] > 0]
+    if not debtors:
+        return []
+    tags = {r["id"]: r["tag"] for r in recon["players"]}
+    before = {(r[0], r[1]) for r in conn.execute(
+        """SELECT COALESCE(pb.merged_into, s.paid_by), COALESCE(pa.merged_into, s.player_id) FROM settlement s
+           JOIN player pb ON pb.id=s.paid_by JOIN player pa ON pa.id=s.player_id WHERE s.method='other_player'""")}
+    largest = 3 if len(debtors) <= 25 else 2
+    out = []
+    for payer, cents in sorted(extra.items(), key=lambda x: -x[1]):
+        if cents <= 0:
+            continue
+        options = [r for r in debtors if r["id"] != payer]
+        ranked = []
+        for size in range(1, largest + 1):
+            for combo in combinations(options, size):
+                total = sum(r["balance"] for r in combo)
+                if total <= cents:
+                    known = sum((payer, r["id"]) in before for r in combo)
+                    ranked.append(((total == cents, known, total, -size), combo, total))
+        ranked.sort(key=lambda x: x[0], reverse=True)
+        exact = [x for x in ranked if x[2] == cents]
+        for _, combo, total in (exact[:3] or ranked[:1]):
+            out.append({"payer": payer, "payer_tag": tags.get(payer, payer), "extra": cents, "total": total,
+                        "exact": total == cents, "players": [{"id": r["id"], "tag": r["tag"], "balance": r["balance"],
+                                                              "before": (payer, r["id"]) in before} for r in combo]})
+    return out
 
 
 def takings_issues(conn, series_id: int | None = None, books: dict | None = None) -> list[dict]:

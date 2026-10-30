@@ -156,6 +156,8 @@ details.confirm{display:inline-block}
 details.confirm>summary{list-style:none;cursor:pointer;display:inline-block;color:var(--owing);border:1px solid var(--owing);border-radius:var(--r);
   font:600 .85rem/1.2 var(--display);text-transform:uppercase;letter-spacing:.07em;padding:.2rem .55rem}
 details.confirm>summary::-webkit-details-marker{display:none}
+.suggest{background:var(--surface);border:1px solid var(--line);border-left:3px solid var(--credit);border-radius:var(--r);padding:.4rem .9rem .2rem;margin:.6rem 0 1rem}
+.suggest ul{margin:.2rem 0 .5rem;padding-left:1.2rem}.suggest li{margin:.25rem 0}
 details.confirm[open]>summary{background:var(--owing-soft)}
 details.confirm>div{margin-top:.4rem;padding:.6rem;background:var(--surface);border:1px solid var(--owing);border-radius:var(--r);max-width:32rem}
 details.panel{border:1px solid var(--line);border-radius:var(--r);background:var(--surface);margin:1rem 0}

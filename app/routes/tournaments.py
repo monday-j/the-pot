@@ -149,6 +149,28 @@ def settle_entrant(tournament_id: str, player_id: str, method: str = Form(...), 
     return back(to)
 
 
+@router.post("/tournaments/{tournament_id}/paid-for")
+def confirm_paid_for(tournament_id: str, paid_by: str = Form(...), player_id: list[str] = Form(...)):
+    """Confirm a suggestion (#51): `paid_by`'s extra money that night paid for these entrants, all they owe."""
+    to = f"/tournaments/{tournament_id}#takings"
+    try:
+        with db.session() as conn:
+            one(conn, "SELECT id FROM tournament WHERE id=?", tournament_id)
+            b = ledger.books(conn)
+            payer, pids = ledger.canonical(conn, paid_by), [ledger.canonical(conn, p) for p in player_id]
+            offered = [{x["id"] for x in s["players"]} for s in square.suggestions(
+                conn, tournament_id, square.reconcile(conn, tournament_id, books=b)) if s["payer"] == payer]
+            if set(pids) not in offered:
+                raise RuleError("That's no longer a suggestion: the payments or what's owed have changed")
+            for pid in pids:
+                ledger.settle(conn, tournament_id, pid, "other_player", b["charges"][(tournament_id, pid)]["balance"],
+                              paid_by=payer)
+            square.lock_clear_tournaments(conn)
+    except RuleError as e:
+        return back(to, str(e))
+    return back(to)
+
+
 @router.post("/settlements/{settlement_id}/delete")
 def delete_settlement(settlement_id: int):
     with db.session() as conn:
@@ -215,6 +237,7 @@ def tournament_page(request: Request, tournament_id: str):
         venues = venue_options(conn)
         b = ledger.books(conn)
         recon = square.reconcile(conn, tournament_id, books=b)
+        suggestions = square.suggestions(conn, tournament_id, recon) if recon["tracked"] else []
         card = next((c for cards in runsheet.stages(conn, t["series_id"], books=b).values() for c in cards
                      if c["id"] == tournament_id), None)
         payouts = conn.execute("""SELECT po.*, e.name AS ename, p.gamer_tag FROM payout po
@@ -227,6 +250,6 @@ def tournament_page(request: Request, tournament_id: str):
     return render(request, "tournament.html", t=t, events=events, attendees=list(attendees.values()), venue=venue,
                   venues=venues, recon=recon, square_setup=square_setup(), meanings=square.MEANINGS, players=players,
                   states=ledger.STATES, settle_methods={**ledger.RECEIPT_METHODS, **ledger.CHARGE_METHODS},
-                  card=card, stages=runsheet.STAGES, payouts=payouts, prizes=prizes, venue_cents=venue_cents,
+                  card=card, stages=runsheet.STAGES, suggestions=suggestions, payouts=payouts, prizes=prizes, venue_cents=venue_cents,
                   to_pay=sum(p["amount_cents"] for p in payouts if p["status"] == "owed")
                   + (venue_cents if venue and venue["payment"] and venue["payment"]["status"] == "owed" else 0))
